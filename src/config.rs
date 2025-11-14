@@ -46,7 +46,6 @@ impl Default for Config {
             database_url: "sqlite://data.db".to_string(),
             loglevel: "info".to_string(),
             proxy: None,
-            // default to empty; validated in from_env()
             nexus_key: String::new(),
             refresh_concurrency: 10,
             bigmodel_list: Vec::new(),
