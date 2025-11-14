@@ -1,0 +1,117 @@
+name: Dev Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    name: Build Linux
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - target: x86_64
+            target_triple: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            artifact_name: gcli-nexus
+            release_name: gcli-nexus-linux-x86_64
+          - target: aarch64
+            target_triple: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            artifact_name: gcli-nexus
+            release_name: gcli-nexus-linux-aarch64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add Rust target
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustup target add ${{ matrix.target_triple }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build for ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target_triple }}
+
+      - name: Package artifact
+        run: |
+          mv target/${{ matrix.target_triple }}/release/${{ matrix.artifact_name }} ${{ matrix.artifact_name }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.release_name }}
+          path: ${{ matrix.artifact_name }}
+          retention-days: 30
+
+  windows:
+    name: Build Windows
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        include:
+          - target: x86_64
+            target_triple: x86_64-pc-windows-msvc
+            artifact_name: gcli-nexus.exe
+            release_name: gcli-nexus-windows-x86_64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build for ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target_triple }}
+
+      - name: Package artifact
+        run: |
+          mv target/${{ matrix.target_triple }}/release/${{ matrix.artifact_name }} ${{ matrix.artifact_name }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.release_name }}
+          path: ${{ matrix.artifact_name }}
+          retention-days: 30
+
+  macos:
+    name: Build macOS
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        include:
+          - target: x86_64
+            target_triple: x86_64-apple-darwin
+            artifact_name: gcli-nexus
+            release_name: gcli-nexus-macos-x86_64
+          - target: aarch64
+            target_triple: aarch64-apple-darwin
+            artifact_name: gcli-nexus
+            release_name: gcli-nexus-macos-aarch64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add Rust target
+        run: rustup target add ${{ matrix.target_triple }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build for ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target_triple }}
+
+      - name: Package artifact
+        run: |
+          mv target/${{ matrix.target_triple }}/release/${{ matrix.artifact_name }} ${{ matrix.artifact_name }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.release_name }}
+          path: ${{ matrix.artifact_name }}
+          retention-days: 30

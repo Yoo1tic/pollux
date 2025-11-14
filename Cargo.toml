@@ -1,0 +1,26 @@
+[package]
+name = "gcli-nexus"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.48", features = ["macros", "rt-multi-thread"] }
+url = { version = "2.5", features = ["serde"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+base64 = "0.22"
+oauth2 = { version = "5", features = ["reqwest", "rustls-tls"] }
+thiserror = "2.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+backon = "1.6"
+futures = "0.3"
+ractor = { version = "0.15.9", features = ["async-trait"] }
+sqlx = { version = "0.8", default-features = false, features = ["sqlite", "chrono", "runtime-tokio"] }
+axum = { version = "0.8" }
+eventsource-stream = "0.2"
+figment = { version = "0.10", features = ["env"] }
+dotenvy = "0.15"
+mimalloc = "*"

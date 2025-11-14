@@ -1,0 +1,115 @@
+use std::sync::LazyLock;
+
+use figment::{
+    Figment,
+    providers::{Env, Serialized},
+};
+use reqwest;
+use serde::{Deserialize, Serialize};
+use url::Url;
+
+/// Application configuration managed by Figment.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Config {
+    /// Database URL for SQLite.
+    /// Env: `DATABASE_URL`. Default: `sqlite://data.db`.
+    pub database_url: String,
+
+    /// Log level for tracing subscriber initialization (e.g., "error", "warn", "info", "debug", "trace").
+    /// Env: `LOGLEVEL`. Default: `info`.
+    pub loglevel: String,
+
+    /// Optional upstream HTTP proxy. If set, used for reqwest clients.
+    /// Env: `PROXY`. Example: `http://127.0.0.1:1080`.
+    pub proxy: Option<Url>,
+
+    /// Authentication key for inbound request validation (required, non-empty).
+    /// Env: `NEXUS_KEY`. Must be provided.
+    pub nexus_key: String,
+
+    /// Max concurrent Google OAuth refreshes processed by the worker.
+    /// Env: `REFRESH_CONCURRENCY`. Default: `10`.
+    pub refresh_concurrency: usize,
+
+    /// List of Gemini model names treated as "big" models.
+    /// Env: `BIGMODEL_LIST`. Default: empty.
+    pub bigmodel_list: Vec<String>,
+
+    /// Whether to auto-load credentials from ./credentials at startup.
+    /// Env: `LOAD_CRED`. Default: `false`.
+    pub load_cred: bool,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            database_url: "sqlite://data.db".to_string(),
+            loglevel: "info".to_string(),
+            proxy: None,
+            // default to empty; validated in from_env()
+            nexus_key: String::new(),
+            refresh_concurrency: 10,
+            bigmodel_list: Vec::new(),
+            load_cred: false,
+        }
+    }
+}
+
+impl Config {
+    /// Builds a Figment that merges defaults and environment variables.
+    /// Uses raw env mapping, so field names map to env vars in UPPER_SNAKE_CASE.
+    pub fn figment() -> Figment {
+        Figment::new()
+            .merge(Serialized::defaults(Config::default()))
+            .merge(Env::raw())
+    }
+
+    /// Loads configuration from the environment (with defaults) and validates required fields.
+    pub fn from_env() -> Self {
+        let cfg: Self = Self::figment()
+            .extract()
+            .expect("failed to extract configuration via Figment");
+        if cfg.nexus_key.trim().is_empty() {
+            panic!("NEXUS_KEY must be set and non-empty");
+        }
+        cfg
+    }
+}
+
+/// Global, lazily-initialized configuration instance.
+pub static CONFIG: LazyLock<Config> = LazyLock::new(Config::from_env);
+
+/// Google OAuth endpoints (constants).
+pub static GOOGLE_AUTH_URL: LazyLock<Url> = LazyLock::new(|| {
+    Url::parse("https://accounts.google.com/o/oauth2/v2/auth").expect("valid Google OAuth auth URL")
+});
+
+pub static GOOGLE_TOKEN_URI: LazyLock<Url> = LazyLock::new(|| {
+    Url::parse("https://oauth2.googleapis.com/token").expect("valid Google OAuth token URI")
+});
+
+pub static GOOGLE_USERINFO_URI: LazyLock<Url> = LazyLock::new(|| {
+    Url::parse("https://www.googleapis.com/oauth2/v3/userinfo")
+        .expect("valid Google OAuth2 userinfo URI")
+});
+
+// Database URL for SQLite. Defaults to `sqlite://data.db` if `DATABASE_URL` is unset.
+// Access via CONFIG.database_url
+
+/// CLI/Proxy version and default User-Agent string. Built once globally.
+pub const CLI_VERSION: &str = "0.1.5";
+pub static CLI_USER_AGENT: LazyLock<String> =
+    LazyLock::new(|| format!("GeminiCLI/{v} (Linux; x86_64)", v = CLI_VERSION));
+
+// Cloud Code Gemini endpoints
+pub static GEMINI_GENERATE_URL: LazyLock<reqwest::Url> = LazyLock::new(|| {
+    reqwest::Url::parse("https://cloudcode-pa.googleapis.com/v1internal:generateContent")
+        .expect("valid Cloud Code generateContent URL")
+});
+
+pub static GEMINI_STREAM_URL: LazyLock<reqwest::Url> = LazyLock::new(|| {
+    reqwest::Url::parse(
+        "https://cloudcode-pa.googleapis.com/v1internal:streamGenerateContent?alt=sse",
+    )
+    .expect("valid Cloud Code streamGenerateContent URL with alt=sse")
+});

@@ -1,0 +1,157 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  CARGO_TERM_COLOR: always
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    name: Build Linux
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - target: x86_64
+            target_triple: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            artifact_name: gcli-nexus
+            release_name: gcli-nexus-linux-x86_64
+          - target: aarch64
+            target_triple: aarch64-unknown-linux-gnu
+            runner: ubuntu-24.04-arm
+            artifact_name: gcli-nexus
+            release_name: gcli-nexus-linux-aarch64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add Rust target
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustup target add ${{ matrix.target_triple }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build for ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target_triple }}
+
+      - name: Create release package
+        run: |
+          mv target/${{ matrix.target_triple }}/release/${{ matrix.artifact_name }} .
+          mkdir -p release-package
+          mv ${{ matrix.artifact_name }} release-package/
+          cd release-package
+          zip -r ../${{ matrix.release_name }}.zip .
+
+      - name: Upload zipped artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.release_name }}
+          path: ${{ matrix.release_name }}.zip
+          retention-days: 1
+
+  windows:
+    name: Build Windows
+    runs-on: windows-latest
+    strategy:
+      matrix:
+        include:
+          - target: x86_64
+            target_triple: x86_64-pc-windows-msvc
+            artifact_name: gcli-nexus.exe
+            release_name: gcli-nexus-windows-x86_64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build for ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target_triple }}
+
+      - name: Create release package
+        run: |
+          mkdir -p release-package
+          mv target/${{ matrix.target_triple }}/release/${{ matrix.artifact_name }} release-package/
+          Compress-Archive -Path 'release-package\*' -DestinationPath "${{ matrix.release_name }}.zip" -CompressionLevel Optimal -Force
+
+      - name: Upload zipped artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.release_name }}
+          path: ${{ matrix.release_name }}.zip
+          retention-days: 1
+
+  macos:
+    name: Build macOS
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        include:
+          - target: x86_64
+            target_triple: x86_64-apple-darwin
+            artifact_name: gcli-nexus
+            release_name: gcli-nexus-macos-x86_64
+          - target: aarch64
+            target_triple: aarch64-apple-darwin
+            artifact_name: gcli-nexus
+            release_name: gcli-nexus-macos-aarch64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Add Rust target
+        run: rustup target add ${{ matrix.target_triple }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build for ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target_triple }}
+
+      - name: Create release package
+        run: |
+          mv target/${{ matrix.target_triple }}/release/${{ matrix.artifact_name }} .
+          mkdir -p release-package
+          mv ${{ matrix.artifact_name }} release-package/
+          cd release-package
+          zip -r ../${{ matrix.release_name }}.zip .
+
+      - name: Upload zipped artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.release_name }}
+          path: ${{ matrix.release_name }}.zip
+          retention-days: 1
+
+  release:
+    name: Create Release
+    needs: [linux, windows, macos]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List downloaded artifacts
+        run: ls -R artifacts
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*.zip
+          name: ${{ github.ref_name }}
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
