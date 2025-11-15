@@ -1,25 +1,28 @@
 use mimalloc::MiMalloc;
 use tokio::net::TcpListener;
 use tracing::{info, warn};
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // Load .env early so Figment/CONFIG sees overrides
     dotenvy::dotenv().ok();
-    // Ensure configuration is loaded before logging setup
+
     let cfg = &gcli_nexus::config::CONFIG;
 
-    // Initialize tracing with loglevel from configuration (env `LOGLEVEL`),
-    // falling back to RUST_LOG if present.
     let env_filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(cfg.loglevel.clone()));
-    tracing_subscriber::fmt().with_env_filter(env_filter).init();
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_level(true)
+                .with_target(false),
+        )
+        .init();
 
-    // Log effective configuration (mask secrets)
     info!(
         database_url = %cfg.database_url,
         proxy = %cfg.proxy.as_ref().map(|u| u.as_str()).unwrap_or("<none>"),
@@ -27,10 +30,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         nexus_key = %cfg.nexus_key
     );
 
-    // Initialize and validate configuration early
     let _ = gcli_nexus::config::CONFIG.nexus_key.len();
 
-    // Spawn credentials actor; it will load active credentials from DB automatically
     let handle = gcli_nexus::service::credentials_actor::spawn().await;
 
     if let Some(cred_path) = cfg.cred_path.as_ref() {

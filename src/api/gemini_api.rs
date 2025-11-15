@@ -1,6 +1,7 @@
 use crate::config::{GEMINI_GENERATE_URL, GEMINI_STREAM_URL};
 use backon::{ExponentialBuilder, Retryable};
 use reqwest::StatusCode;
+use tracing::error;
 
 pub struct GeminiApi;
 
@@ -43,7 +44,10 @@ impl GeminiApi {
                 {
                     Ok(resp)
                 }
-                Err(e) => Err(e),
+                Err(e) => {
+                    error!("Gemini CLI request failed: {:?} {}", e.status(), e);
+                    Err(e)
+                }
             }
         })
         .retry(retry_policy)

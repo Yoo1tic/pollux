@@ -133,13 +133,21 @@ impl GeminiClient {
                                     Duration::from_secs(retry_secs),
                                 )
                                 .await;
-                            info!("Project: {}, rate limit reported", assigned.project_id);
+                            info!(
+                                "Project: {}, credential marked rate limit",
+                                assigned.project_id
+                            );
                         }
                         StatusCode::UNAUTHORIZED => {
                             handle.report_invalid(assigned.id).await;
+                            info!(
+                                "Project: {}, credential marked invalid",
+                                assigned.project_id
+                            );
                         }
                         StatusCode::FORBIDDEN => {
                             handle.report_baned(assigned.id).await;
+                            info!("Project: {}, credential marked banned", assigned.project_id);
                         }
                         _ => {}
                     }
