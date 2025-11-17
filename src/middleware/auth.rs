@@ -1,52 +1,29 @@
-use axum::Json;
-use axum::extract::FromRequestParts;
-use axum::http::{HeaderMap, StatusCode, request::Parts};
-use axum::response::{IntoResponse, Response};
-use serde_json::json;
-
 use crate::config::CONFIG;
+use axum::{
+    Json,
+    extract::FromRequestParts,
+    http::{StatusCode, request::Parts},
+    response::{IntoResponse, Response},
+};
+use axum_extra::headers::{Authorization, HeaderMapExt, authorization::Bearer};
+use serde_json::json;
+use subtle::ConstantTimeEq;
 
-/// Ensure the inbound request is authorized.
-/// Accepts either:
-/// - Query string: `?key=...`
-/// - Header: `x-goog-api-key: ...`
-///   Requires server key to be configured via `NEXUS_KEY`.
-pub fn ensure_authorized(headers: &HeaderMap, query: Option<&str>) -> Result<(), Response> {
-    let expected = CONFIG.nexus_key.as_str();
-
-    // 1) header: x-goog-api-key
-    if let Some(hv) = headers.get("x-goog-api-key").and_then(|v| v.to_str().ok())
-        && hv == expected
-    {
-        return Ok(());
+fn extract_header_token(headers: &axum::http::HeaderMap) -> Option<String> {
+    if let Some(k) = headers.get("x-goog-api-key").and_then(|v| v.to_str().ok()) {
+        return Some(k.to_string());
     }
+    headers
+        .typed_get::<Authorization<Bearer>>()
+        .map(|auth| auth.token().to_string())
+}
 
-    // 2) header: Authorization: Bearer <key>
-    if let Some(auth) = headers.get("authorization").and_then(|v| v.to_str().ok()) {
-        let auth = auth.trim();
-        if let Some(token) = auth
-            .strip_prefix("Bearer ")
-            .or_else(|| auth.strip_prefix("bearer "))
-            && token == expected
-        {
-            return Ok(());
-        }
-    }
-
-    // 3) query: key=...
-    if let Some(qs) = query {
-        for (k, v) in url::form_urlencoded::parse(qs.as_bytes()) {
-            if k == "key" && v == expected {
-                return Ok(());
-            }
-        }
-    }
-
-    Err((
-        StatusCode::UNAUTHORIZED,
-        Json(json!({"error": "unauthorized", "reason": "invalid or missing key"})),
-    )
-        .into_response())
+fn extract_query_token(query: Option<&str>) -> Option<String> {
+    query.and_then(|q| {
+        url::form_urlencoded::parse(q.as_bytes())
+            .find(|(k, _)| k == "key")
+            .map(|(_, v)| v.into_owned())
+    })
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -56,12 +33,41 @@ impl<S> FromRequestParts<S> for RequireKeyAuth
 where
     S: Send + Sync,
 {
-    type Rejection = Response;
+    type Rejection = AuthError;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        let headers = &parts.headers;
-        let query = parts.uri.query();
-        ensure_authorized(headers, query)?;
-        Ok(Self)
+        let token =
+            extract_header_token(&parts.headers).or_else(|| extract_query_token(parts.uri.query()));
+
+        match token {
+            Some(key) => {
+                let expected = CONFIG.nexus_key.as_str();
+                if key.as_bytes().ct_eq(expected.as_bytes()).into() {
+                    Ok(RequireKeyAuth)
+                } else {
+                    Err(AuthError::InvalidKey)
+                }
+            }
+            None => Err(AuthError::MissingKey),
+        }
+    }
+}
+
+pub enum AuthError {
+    MissingKey,
+    InvalidKey,
+}
+
+impl IntoResponse for AuthError {
+    fn into_response(self) -> Response {
+        let (status, reason) = match self {
+            AuthError::MissingKey => (StatusCode::UNAUTHORIZED, "Missing API key"),
+            AuthError::InvalidKey => (StatusCode::UNAUTHORIZED, "Invalid API key"),
+        };
+        (
+            status,
+            Json(json!({ "error": "unauthorized", "reason": reason })),
+        )
+            .into_response()
     }
 }
