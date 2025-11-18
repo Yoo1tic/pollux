@@ -11,15 +11,14 @@ use axum::{
     },
 };
 use backon::{ExponentialBuilder, Retryable};
-use chrono::{DateTime, Utc};
 use eventsource_stream::{Event as UpstreamEvent, Eventsource};
 use futures::{StreamExt, TryStreamExt};
 use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::json;
 use std::{io, time::Duration};
 use tracing::{error, info, warn};
 
-use crate::error::NexusError;
+use crate::error::{GeminiError, NexusError};
 use crate::middleware::gemini_request::{GeminiContext, GeminiRequestBody};
 use crate::router::NexusState;
 use crate::types::cli::{cli_bytes_to_aistudio, cli_str_to_aistudio};
@@ -78,6 +77,7 @@ impl GeminiClient {
                         .get_credential(&ctx.model)
                         .await?
                         .ok_or(NexusError::NoAvailableCredential)?;
+
                     info!(
                         "Using credential ID: {} Project: {}",
                         assigned.id, assigned.project_id
@@ -93,140 +93,115 @@ impl GeminiClient {
                         retry_policy_inner,
                         &payload,
                     )
-                    .await
-                    .map_err(NexusError::Reqwest)?;
+                    .await?;
+                    if !resp.status().is_success() {
+                        let status = resp.status();
+                        let bytes = resp.bytes().await.map_err(NexusError::Reqwest)?;
 
-                    if resp.error_for_status_ref().is_ok() {
-                        return Ok(resp);
-                    }
-
-                    let status = resp.status();
-                    let headers = resp.headers().clone();
-                    let body = match resp.bytes().await {
-                        Ok(b) => b,
-                        Err(e) => {
-                            warn!(error = %e, "failed to read upstream error body");
-                            axum::body::Bytes::new()
-                        }
-                    };
-
-                    match status {
-                        StatusCode::TOO_MANY_REQUESTS => {
-                            let retry_secs = parse_quota_reset_delay_secs(&body).unwrap_or(90);
-                            handle
-                                .report_rate_limit(
-                                    assigned.id,
-                                    &ctx.model,
-                                    Duration::from_secs(retry_secs),
-                                )
-                                .await;
-                            info!(
-                                "Project: {}, credential marked rate limit",
-                                assigned.project_id
+                        if let Ok(gemini_err) = serde_json::from_slice::<GeminiError>(&bytes) {
+                            let http_code = gemini_err.error.code;
+                            warn!(
+                                project = %assigned.project_id,
+                                error_struct = ?gemini_err,
+                                "Upstream returned structured error"
                             );
-                        }
-                        StatusCode::UNAUTHORIZED => {
-                            handle.report_invalid(assigned.id).await;
-                            info!(
-                                "Project: {}, credential marked invalid",
-                                assigned.project_id
-                            );
-                        }
-                        StatusCode::FORBIDDEN => {
-                            handle.report_baned(assigned.id).await;
-                            info!("Project: {}, credential marked banned", assigned.project_id);
-                        }
-                        _ => {}
-                    }
+                            match gemini_err.error.status.as_str() {
+                                "RESOURCE_EXHAUSTED" => {
+                                    let retry_secs = gemini_err.quota_reset_delay().unwrap_or(90);
+                                    handle
+                                        .report_rate_limit(
+                                            assigned.id,
+                                            &ctx.model,
+                                            Duration::from_secs(retry_secs),
+                                        )
+                                        .await;
+                                    info!(
+                                        "Project: {}, rate limit (parsed, {}s)",
+                                        assigned.project_id, retry_secs
+                                    );
+                                }
+                                "UNAUTHENTICATED" => {
+                                    handle.report_invalid(assigned.id).await;
+                                    info!("Project: {}, invalid (parsed)", assigned.project_id);
+                                }
 
-                    Err(NexusError::UpstreamHttp {
-                        status,
-                        headers,
-                        body,
-                    })
+                                "PERMISSION_DENIED" if http_code == 403 => {
+                                    handle.report_baned(assigned.id).await;
+                                    info!("Project: {}, banned (parsed)", assigned.project_id);
+                                }
+
+                                _ if http_code == 401 => {
+                                    handle.report_invalid(assigned.id).await;
+                                }
+                                _ if http_code == 429 => {
+                                    handle
+                                        .report_rate_limit(
+                                            assigned.id,
+                                            &ctx.model,
+                                            Duration::from_secs(60),
+                                        )
+                                        .await;
+                                }
+                                _ => {}
+                            }
+
+                            return Err(NexusError::GeminiServerError(gemini_err));
+                        } else {
+                            let raw_body = String::from_utf8_lossy(&bytes);
+
+                            match status {
+                                StatusCode::TOO_MANY_REQUESTS => {
+                                    handle
+                                        .report_rate_limit(
+                                            assigned.id,
+                                            &ctx.model,
+                                            Duration::from_secs(60),
+                                        )
+                                        .await;
+                                    warn!(
+                                        "Project: {}, 429 Rate limit (Fallback). Body: {:.100}...",
+                                        assigned.project_id, raw_body
+                                    );
+                                }
+                                StatusCode::FORBIDDEN => {
+                                    warn!(
+                                        "Project: {}, 403 Forbidden (Raw/WAF), preserving credential. Body: {:.100}...",
+                                        assigned.project_id, raw_body
+                                    );
+                                }
+                                _ => {
+                                    warn!(
+                                        "Upstream non-JSON error. Status: {}, Body: {:.100}",
+                                        status, raw_body
+                                    );
+                                }
+                            }
+
+                            return Err(NexusError::UpstreamStatus(status));
+                        }
+                    }
+                    Ok(resp)
                 }
             }
         };
 
         op.retry(&self.retry_policy)
-            .when(|err: &NexusError| {
-                matches!(
-                    err,
-                    NexusError::UpstreamHttp { status, .. }
-                    if *status == StatusCode::UNAUTHORIZED || *status == StatusCode::FORBIDDEN || *status == StatusCode::TOO_MANY_REQUESTS
-                )
+            .when(|err: &NexusError| match err {
+                NexusError::GeminiServerError(e) => {
+                    let status = e.error.status.as_str();
+                    matches!(
+                        status,
+                        "RESOURCE_EXHAUSTED" | "UNAUTHENTICATED" | "PERMISSION_DENIED"
+                    )
+                }
+
+                NexusError::Reqwest(_) => true,
+                _ => false,
             })
             .await
     }
 
-    /// Map the result of `call_gemini_cli` into an `axum::Response`,
-    /// converting CLI payloads into the AiStudio format (including SSE streams).
-    pub async fn into_axum_response(
-        ctx: &GeminiContext,
-        result: Result<reqwest::Response, NexusError>,
-    ) -> Response {
-        match result {
-            Ok(upstream_resp) => {
-                if ctx.stream {
-                    Self::build_stream_response(upstream_resp)
-                } else {
-                    Self::build_json_response(upstream_resp).await
-                }
-            }
-            Err(NexusError::NoAvailableCredential) => (
-                StatusCode::SERVICE_UNAVAILABLE,
-                Json(json!({ "error": "no available credential" })),
-            )
-                .into_response(),
-            Err(NexusError::Reqwest(e)) => {
-                error!(error = %e, "upstream network error after retries");
-                (
-                    StatusCode::BAD_GATEWAY,
-                    Json(json!({ "error": "upstream network error" })),
-                )
-                    .into_response()
-            }
-            Err(NexusError::RactorError(msg)) => {
-                error!(error = %msg, "credential acquisition failed");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({ "error": "credential acquisition failed" })),
-                )
-                    .into_response()
-            }
-            Err(NexusError::UpstreamHttp {
-                status,
-                headers,
-                body,
-            }) => {
-                let mut resp_builder = axum::response::Response::builder().status(status);
-                if let Some(headers_mut) = resp_builder.headers_mut() {
-                    for (k, v) in headers.iter() {
-                        headers_mut.insert(k, v.clone());
-                    }
-                }
-                resp_builder
-                    .body(axum::body::Body::from(body))
-                    .unwrap_or_else(|_| {
-                        (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            Json(json!({"error":"build response failed"})),
-                        )
-                            .into_response()
-                    })
-            }
-            Err(other) => {
-                error!(error = ?other, "unhandled NexusError when calling Gemini CLI");
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(json!({ "error": "internal error" })),
-                )
-                    .into_response()
-            }
-        }
-    }
-
-    async fn build_json_response(upstream_resp: reqwest::Response) -> Response {
+    pub async fn build_json_response(upstream_resp: reqwest::Response) -> Response {
         let status = upstream_resp.status();
         let original_headers = upstream_resp.headers().clone();
         match upstream_resp.bytes().await {
@@ -268,14 +243,14 @@ impl GeminiClient {
         }
     }
 
-    fn build_stream_response(upstream_resp: reqwest::Response) -> Response {
+    pub fn build_stream_response(upstream_resp: reqwest::Response) -> Response {
         let status = upstream_resp.status();
         let original_headers = upstream_resp.headers().clone();
         let sse_stream = upstream_resp
             .bytes_stream()
-            .map_err(|err| io::Error::new(io::ErrorKind::Other, err))
+            .map_err(io::Error::other)
             .eventsource()
-            .map(|result| result.map_err(|err| io::Error::new(io::ErrorKind::Other, err)))
+            .map(|result| result.map_err(io::Error::other))
             .filter_map(|result| async {
                 match result {
                     Ok(event) => convert_upstream_event(event).map(Ok),
@@ -288,29 +263,6 @@ impl GeminiClient {
         *response.headers_mut() = original_headers;
         response
     }
-}
-
-/// Parse Gemini 429 JSON body to get cooldown seconds from `quotaResetTimeStamp`.
-fn parse_quota_reset_delay_secs(body: &[u8]) -> Option<u64> {
-    let v: Value = serde_json::from_slice(body).ok()?;
-    v.get("error")?
-        .get("details")?
-        .as_array()?
-        .iter()
-        .filter_map(|detail| {
-            detail
-                .get("metadata")
-                .and_then(|m| m.get("quotaResetTimeStamp"))
-                .and_then(|ts| ts.as_str())
-                .and_then(|ts| DateTime::parse_from_rfc3339(ts).ok())
-        })
-        .filter_map(|reset_dt| {
-            let reset = reset_dt.with_timezone(&Utc);
-            let now = Utc::now();
-            let diff_secs = (reset - now).num_seconds();
-            (diff_secs > 0).then_some(diff_secs as u64)
-        })
-        .next()
 }
 
 fn convert_cli_envelope_bytes(body: &[u8]) -> Vec<u8> {
@@ -349,9 +301,7 @@ fn convert_cli_sse_payload(payload: &str) -> Option<String> {
     if trimmed.is_empty() {
         return None;
     }
-    match cli_str_to_aistudio(trimmed)
-        .and_then(|resp| serde_json::to_string(&resp).map_err(Into::into))
-    {
+    match cli_str_to_aistudio(trimmed).and_then(|resp| serde_json::to_string(&resp)) {
         Ok(converted) => Some(converted),
         Err(e) => {
             warn!(error = %e, "failed to parse CLI SSE payload as JSON");

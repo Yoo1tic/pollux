@@ -1,6 +1,5 @@
 use crate::config::{GEMINI_GENERATE_URL, GEMINI_STREAM_URL};
 use backon::{ExponentialBuilder, Retryable};
-use reqwest::StatusCode;
 use tracing::error;
 
 pub struct GeminiApi;
@@ -30,25 +29,13 @@ impl GeminiApi {
                 .json(body)
                 .send()
                 .await?;
-            match resp.error_for_status_ref() {
-                Ok(_) => Ok(resp),
-                Err(e)
-                    if matches!(
-                        e.status(),
-                        Some(
-                            StatusCode::TOO_MANY_REQUESTS
-                                | StatusCode::UNAUTHORIZED
-                                | StatusCode::FORBIDDEN
-                        )
-                    ) =>
-                {
-                    Ok(resp)
-                }
-                Err(e) => {
-                    error!("Gemini CLI request failed: {:?} {}", e.status(), e);
-                    Err(e)
-                }
+            if resp.status().is_server_error() {
+                let status = resp.status();
+                let err = resp.error_for_status().unwrap_err();
+                error!("Gemini CLI server error (will retry): {}", status);
+                return Err(err);
             }
+            Ok(resp)
         })
         .retry(retry_policy)
         .await

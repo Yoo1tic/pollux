@@ -6,17 +6,23 @@ use axum::{
 };
 use serde_json::json;
 
-use crate::api::gemini_client::GeminiClient; // higher-level caller using the stateless GeminiApi
 use crate::router::NexusState;
+use crate::{NexusError, api::gemini_client::GeminiClient}; // higher-level caller using the stateless GeminiApi
 
 pub async fn gemini_cli_handler(
     State(state): State<NexusState>,
     GeminiPreprocess(body, ctx): GeminiPreprocess,
-) -> Response {
-    // Construct caller using shared reqwest::Client from router state
+) -> Result<Response, NexusError> {
+    // Construct caller
     let caller = GeminiClient::new(state.client.clone());
-    let result = caller.call_gemini_cli(&state, &ctx, &body).await;
-    GeminiClient::into_axum_response(&ctx, result).await
+
+    let upstream_resp = caller.call_gemini_cli(&state, &ctx, &body).await?;
+
+    if ctx.stream {
+        Ok(GeminiClient::build_stream_response(upstream_resp))
+    } else {
+        Ok(GeminiClient::build_json_response(upstream_resp).await)
+    }
 }
 
 // Move types to middleware: it is the handler layer

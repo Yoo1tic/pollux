@@ -1,9 +1,5 @@
-use axum::{
-    Json,
-    body::Bytes,
-    http::{HeaderMap, StatusCode},
-    response::IntoResponse,
-};
+use axum::{Json, http::StatusCode, response::IntoResponse};
+use chrono::{DateTime, Utc};
 use oauth2::basic::BasicErrorResponseType;
 use oauth2::reqwest::Error as ReqwestClientError;
 use oauth2::{HttpClientError, RequestTokenError, StandardErrorResponse};
@@ -45,12 +41,9 @@ pub enum NexusError {
     #[error("Database error: {0}")]
     DatabaseError(#[from] SqlxError),
 
-    #[error("upstream HTTP error: {status}")]
-    UpstreamHttp {
-        status: StatusCode,
-        headers: HeaderMap,
-        body: Bytes,
-    },
+    #[error("Upstream error with status: {0}")]
+    UpstreamStatus(StatusCode),
+
     #[error("Gemini API error: {0:?}")]
     GeminiServerError(GeminiError),
 }
@@ -132,17 +125,24 @@ impl IntoResponse for NexusError {
                 };
                 (status, body)
             }
-            NexusError::UpstreamHttp {
-                status,
-                headers,
-                body,
-            } => {
-                let status = status;
-                let body = ApiErrorBody {
-                    code: "BAD_GATEWAY".to_string(),
-                    message: "Upstream service is unavailable.".to_string(),
+            NexusError::UpstreamStatus(code) => {
+                let (err_code, msg) = match code {
+                    StatusCode::TOO_MANY_REQUESTS => {
+                        ("RATE_LIMIT", "Upstream rate limit exceeded.")
+                    }
+                    StatusCode::UNAUTHORIZED => ("UNAUTHORIZED", "Upstream authentication failed."),
+                    StatusCode::FORBIDDEN => ("FORBIDDEN", "Upstream permission denied."),
+                    StatusCode::NOT_FOUND => ("NOT_FOUND", "Upstream resource not found."),
+                    _ => ("UPSTREAM_ERROR", "An upstream error occurred."),
                 };
-                (status, body)
+
+                (
+                    code,
+                    ApiErrorBody {
+                        code: err_code.to_string(),
+                        message: msg.to_string(),
+                    },
+                )
             }
         };
         (status, Json(ApiErrorResponse { error: error_body })).into_response()
@@ -174,4 +174,28 @@ pub struct GeminiErrorBody {
     pub status: String,
     #[serde(flatten)]
     pub extra: HashMap<String, Value>,
+}
+
+impl GeminiError {
+    pub fn quota_reset_delay(&self) -> Option<u64> {
+        self.error
+            .extra
+            .get("details")?
+            .as_array()?
+            .iter()
+            .filter_map(|detail| {
+                detail
+                    .get("metadata")
+                    .and_then(|m| m.get("quotaResetTimeStamp"))
+                    .and_then(|ts| ts.as_str())
+                    .and_then(|ts| DateTime::parse_from_rfc3339(ts).ok())
+            })
+            .filter_map(|reset_dt| {
+                let reset = reset_dt.with_timezone(&Utc);
+                let now = Utc::now();
+                let diff_secs = (reset - now).num_seconds();
+                (diff_secs > 0).then_some(diff_secs as u64)
+            })
+            .next()
+    }
 }

@@ -1,5 +1,5 @@
+use std::path::Path;
 use std::{fs, io};
-use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 use tracing::{info, warn};
@@ -21,7 +21,7 @@ pub fn load_from_dir(dir: &Path) -> io::Result<Vec<GoogleCredential>> {
                 None
             }
         })
-        .filter(|path| is_json_file(path))
+        .filter(|path| is_json_file(path.as_path()))
         .filter_map(|path| read_file(&path).map(|contents| (path, contents)))
         .filter_map(|(path, contents)| parse_json(&path, &contents).map(|value| (path, value)))
         .filter_map(
@@ -40,7 +40,7 @@ pub fn load_from_dir(dir: &Path) -> io::Result<Vec<GoogleCredential>> {
     Ok(loaded)
 }
 
-fn is_json_file(path: &PathBuf) -> bool {
+fn is_json_file(path: &Path) -> bool {
     path.extension()
         .and_then(|s| s.to_str())
         .map(|ext| ext.eq_ignore_ascii_case("json"))
@@ -48,7 +48,7 @@ fn is_json_file(path: &PathBuf) -> bool {
 }
 
 fn read_file(path: &Path) -> Option<String> {
-    match fs::read_to_string(&path) {
+    match fs::read_to_string(path) {
         Ok(contents) => Some(contents),
         Err(e) => {
             warn!(path = %path.display(), error = %e, "failed to read credential file");

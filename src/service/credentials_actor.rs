@@ -205,11 +205,10 @@ impl CredentialsActorState {
     }
 
     fn pop_for_tier(&mut self, tier: ModelTier) -> Option<CredentialId> {
-        let next = match tier {
+        match tier {
             ModelTier::Big => self.bigmodel_queue.pop_front(),
             ModelTier::Tiny => self.tinymodel_queue.pop_front(),
-        };
-        next
+        }
     }
 }
 
@@ -430,7 +429,7 @@ impl CredentialsActor {
             info!(
                 "ID: {id}, Credential starting cooldown for {} queue, will re-enqueue after cooldown {} secs",
                 tier.label(),
-                cooldown.as_secs() as u64,
+                cooldown.as_secs(),
             );
         } else {
             debug!(
