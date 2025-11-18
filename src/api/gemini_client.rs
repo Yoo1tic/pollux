@@ -41,7 +41,7 @@ impl GeminiClient {
     pub fn new(client: reqwest::Client) -> Self {
         let retry_policy = ExponentialBuilder::default()
             .with_min_delay(Duration::from_millis(200))
-            .with_max_delay(Duration::from_millis(1000))
+            .with_max_delay(Duration::from_millis(500))
             .with_max_times(2);
         Self {
             client,

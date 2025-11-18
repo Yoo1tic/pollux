@@ -7,7 +7,7 @@ edition = "2024"
 chrono = { version = "0.4", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-tokio = { version = "1.48", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.48", features = ["macros", "rt-multi-thread", "signal"] }
 url = { version = "2.5", features = ["serde"] }
 reqwest = { version = "0.12", default-features = false, features = ["http2", "json", "rustls-tls", "stream"] }
 base64 = "0.22"
@@ -17,7 +17,7 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 backon = "1.6"
 futures = "0.3"
-ractor = { version = "0.15.9", features = ["async-trait"] }
+ractor = { version = "0.15", features = ["async-trait"] }
 sqlx = { version = "0.8", default-features = false, features = ["sqlite", "chrono", "runtime-tokio"] }
 axum = { version = "0.8" }
 axum-extra = { version = "0.12", features = ["typed-header"] }
