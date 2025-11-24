@@ -2,14 +2,14 @@
 //! SQLite-first design; can be adapted for other RDBMS.
 
 /// SQLite schema with:
-/// - `id` INTEGER PRIMARY KEY AUTOINCREMENT
+/// - `id` INTEGER PRIMARY KEY
 /// - Core fields mirrored from `GoogleCredential` (client keys are constants and not stored)
 /// - `project_id` UNIQUE (creates an index implicitly)
 /// - `status` BOOLEAN (stored as INTEGER 0/1)
 /// - Separate index on `project_id` kept for clarity/perf (redundant with UNIQUE)
 pub const SQLITE_INIT: &str = r#"
 CREATE TABLE IF NOT EXISTS credentials (
-    id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+    id INTEGER PRIMARY KEY NOT NULL,
     email TEXT NULL,
     project_id TEXT NOT NULL UNIQUE,
     refresh_token TEXT NOT NULL,

@@ -250,7 +250,6 @@ impl Actor for CredentialsActor {
         let connect_opts = SqliteConnectOptions::from_str(CONFIG.database_url.as_str())
             .map_err(|e| ActorProcessingErr::from(format!("DB opts parse failed: {}", e)))?
             .create_if_missing(true);
-        // .journal_mode(SqliteJournalMode::Wal);
         let pool = SqlitePoolOptions::new()
             .connect_with(connect_opts)
             .await
