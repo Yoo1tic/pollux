@@ -1,3 +1,3 @@
 pub mod credentials;
-mod endpoints;
+pub(crate) mod endpoints;
 pub mod service;

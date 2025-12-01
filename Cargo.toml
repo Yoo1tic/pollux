@@ -22,7 +22,7 @@ futures = "0.3"
 ractor = { version = "0.15", features = ["async-trait"] }
 sqlx = { version = "0.8", default-features = false, features = ["sqlite", "chrono", "runtime-tokio", "macros"] }
 axum = { version = "0.8" }
-axum-extra = { version = "0.12", features = ["typed-header"] }
+axum-extra = { version = "0.12", features = ["typed-header", "cookie-private"] }
 headers = "0.4"
 subtle = "2.6"
 eventsource-stream = "0.2"

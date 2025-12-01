@@ -1,7 +1,9 @@
+use axum_extra::extract::cookie::Key;
 use figment::{
     Figment,
     providers::{Env, Serialized},
 };
+use oauth2::RedirectUrl;
 use reqwest;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
@@ -46,6 +48,11 @@ pub struct Config {
     #[serde(deserialize_with = "deserialize_string_lax")]
     pub nexus_key: String,
 
+    /// Domain used to build OAuth callback URL (e.g., "https://example.com").
+    /// Env: `OAUTH_CALLBACK_DOMAIN`. Must be provided and include scheme.
+    #[serde(default = "default_oauth_callback_domain")]
+    pub oauth_callback_domain: Url,
+
     /// Max concurrent Google OAuth refreshes processed by the worker.
     /// Env: `REFRESH_CONCURRENCY`. Default: `10`.
     #[serde(default)]
@@ -76,6 +83,7 @@ impl Default for Config {
             loglevel: "info".to_string(),
             proxy: None,
             nexus_key: "pwd".to_string(),
+            oauth_callback_domain: default_oauth_callback_domain(),
             refresh_concurrency: 10,
             bigmodel_list: Vec::new(),
             cred_path: None,
@@ -136,6 +144,21 @@ pub static GOOGLE_USERINFO_URI: LazyLock<Url> = LazyLock::new(|| {
     Url::parse("https://www.googleapis.com/oauth2/v3/userinfo")
         .expect("valid Google OAuth2 userinfo URI")
 });
+
+pub static OAUTH_CALLBACK_URL: LazyLock<RedirectUrl> = LazyLock::new(|| {
+    let mut url = CONFIG.oauth_callback_domain.clone();
+    url.set_path("auth/callback");
+    url.set_query(None);
+    RedirectUrl::new(url.to_string())
+        .expect("valid OAuth callback URL built from OAUTH_CALLBACK_DOMAIN")
+});
+
+/// Global cookie signing/encryption key for PrivateCookieJar.
+pub static COOKIE_KEY: LazyLock<Key> = LazyLock::new(Key::generate);
+
+fn default_oauth_callback_domain() -> Url {
+    Url::parse("http://localhost:8188").expect("valid default OAuth callback domain")
+}
 
 pub const GCLI_CLIENT_ID: &str = env!("GCLI_CLIENT_ID");
 pub const GCLI_CLIENT_SECRET: &str = env!("GCLI_CLIENT_SECRET");

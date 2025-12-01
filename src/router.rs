@@ -1,9 +1,13 @@
-use crate::config::{CLI_USER_AGENT, CONFIG};
+use crate::config::{CLI_USER_AGENT, CONFIG, COOKIE_KEY};
+use crate::handlers::google_oauth::{google_oauth_callback, google_oauth_entry};
 use crate::service::credentials_actor::CredentialsHandle;
 use axum::{
-    Router, middleware,
+    Router,
+    extract::FromRef,
+    middleware,
     routing::{get, post},
 };
+use axum_extra::extract::cookie::Key;
 use reqwest::header::{CONNECTION, HeaderMap, HeaderValue};
 use std::time::Duration;
 
@@ -49,15 +53,28 @@ impl NexusState {
     }
 }
 
+impl FromRef<NexusState> for Key {
+    fn from_ref(state: &NexusState) -> Self {
+        let _ = state; // state not used to fetch the static key
+        COOKIE_KEY.clone()
+    }
+}
+
 pub fn nexus_router(state: NexusState) -> Router {
     use crate::handlers::gemini::{
         gemini_cli_handler, gemini_models_handler, openai_models_handler,
     };
     use crate::middleware::auth::RequireKeyAuth;
-    Router::new()
+
+    let authed = Router::new()
         .route("/v1beta/models", get(gemini_models_handler))
         .route("/v1beta/openai/models", get(openai_models_handler))
         .route("/v1beta/models/{*path}", post(gemini_cli_handler))
-        .layer(middleware::from_extractor::<RequireKeyAuth>())
-        .with_state(state)
+        .layer(middleware::from_extractor::<RequireKeyAuth>());
+
+    let oauth = Router::new()
+        .route("/auth/{secret}", get(google_oauth_entry))
+        .route("/auth/callback", get(google_oauth_callback));
+
+    Router::new().merge(oauth).merge(authed).with_state(state)
 }

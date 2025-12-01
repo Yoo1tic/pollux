@@ -13,6 +13,9 @@ pub enum NexusError {
     #[error("Upstream error with status: {0}")]
     UpstreamStatus(StatusCode),
 
+    #[error("OAuth flow error: {0}")]
+    OauthFlowError(String),
+
     #[error("Gemini API error: {0:?}")]
     GeminiServerError(GeminiError),
 
@@ -90,6 +93,14 @@ impl IntoResponse for NexusError {
                 let body = ApiErrorBody {
                     code: "INTERNAL_ERROR".to_string(),
                     message: "An internal server error occurred.".to_string(),
+                };
+                (status, body)
+            }
+            NexusError::OauthFlowError(msg) => {
+                let status = StatusCode::BAD_REQUEST;
+                let body = ApiErrorBody {
+                    code: "OAUTH_FLOW_ERROR".to_string(),
+                    message: msg,
                 };
                 (status, body)
             }
