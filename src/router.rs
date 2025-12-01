@@ -1,6 +1,9 @@
 use crate::config::{CLI_USER_AGENT, CONFIG};
 use crate::service::credentials_actor::CredentialsHandle;
-use axum::{Router, middleware, routing::any};
+use axum::{
+    Router, middleware,
+    routing::{get, post},
+};
 use reqwest::header::{CONNECTION, HeaderMap, HeaderValue};
 use std::time::Duration;
 
@@ -47,10 +50,11 @@ impl NexusState {
 }
 
 pub fn nexus_router(state: NexusState) -> Router {
-    use crate::handlers::gemini::gemini_cli_handler;
+    use crate::handlers::gemini::{gemini_cli_handler, gemini_models_handler};
     use crate::middleware::auth::RequireKeyAuth;
     Router::new()
-        .route("/v1beta/models/{*path}", any(gemini_cli_handler))
+        .route("/v1beta/models", get(gemini_models_handler))
+        .route("/v1beta/models/{*path}", post(gemini_cli_handler))
         .layer(middleware::from_extractor::<RequireKeyAuth>())
         .with_state(state)
 }

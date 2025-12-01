@@ -144,6 +144,92 @@ pub const CLI_VERSION: &str = "0.16.0";
 pub static CLI_USER_AGENT: LazyLock<String> =
     LazyLock::new(|| format!("GeminiCLI/{v} (Linux; x64)", v = CLI_VERSION));
 
+/// Embedded Gemini native models response (matches Google Generative Language models endpoint).
+pub const GEMINI_NATIVE_MODELS_JSON: &str = r#"{
+  "models": [
+    {
+      "name": "models/gemini-2.5-flash",
+      "version": "001",
+      "displayName": "Gemini 2.5 Flash",
+      "description": "Stable version of Gemini 2.5 Flash, our mid-size multimodal model that supports up to 1 million tokens, released in June of 2025.",
+      "inputTokenLimit": 1048576,
+      "outputTokenLimit": 65536,
+      "supportedGenerationMethods": [
+        "generateContent",
+        "countTokens",
+        "createCachedContent",
+        "batchGenerateContent"
+      ],
+      "temperature": 1,
+      "topP": 0.95,
+      "topK": 64,
+      "maxTemperature": 2,
+      "thinking": true
+    },
+    {
+      "name": "models/gemini-2.5-pro",
+      "version": "2.5",
+      "displayName": "Gemini 2.5 Pro",
+      "description": "Stable release (June 17th, 2025) of Gemini 2.5 Pro",
+      "inputTokenLimit": 1048576,
+      "outputTokenLimit": 65536,
+      "supportedGenerationMethods": [
+        "generateContent",
+        "countTokens",
+        "createCachedContent",
+        "batchGenerateContent"
+      ],
+      "temperature": 1,
+      "topP": 0.95,
+      "topK": 64,
+      "maxTemperature": 2,
+      "thinking": true
+    },
+    {
+      "name": "models/gemini-2.5-flash-lite",
+      "version": "001",
+      "displayName": "Gemini 2.5 Flash-Lite",
+      "description": "Stable version of Gemini 2.5 Flash-Lite, released in July of 2025",
+      "inputTokenLimit": 1048576,
+      "outputTokenLimit": 65536,
+      "supportedGenerationMethods": [
+        "generateContent",
+        "countTokens",
+        "createCachedContent",
+        "batchGenerateContent"
+      ],
+      "temperature": 1,
+      "topP": 0.95,
+      "topK": 64,
+      "maxTemperature": 2,
+      "thinking": true
+    },
+    {
+      "name": "models/gemini-3-pro-preview",
+      "version": "3-pro-preview-11-2025",
+      "displayName": "Gemini 3 Pro Preview",
+      "description": "Gemini 3 Pro Preview",
+      "inputTokenLimit": 1048576,
+      "outputTokenLimit": 65536,
+      "supportedGenerationMethods": [
+        "generateContent",
+        "countTokens",
+        "createCachedContent",
+        "batchGenerateContent"
+      ],
+      "temperature": 1,
+      "topP": 0.95,
+      "topK": 64,
+      "maxTemperature": 2,
+      "thinking": true
+    }
+  ]
+}"#;
+
+pub static GEMINI_NATIVE_MODELS: LazyLock<Value> = LazyLock::new(|| {
+    serde_json::from_str(GEMINI_NATIVE_MODELS_JSON).expect("embedded models JSON must be valid")
+});
+
 // Cloud Code Gemini endpoints
 pub static GEMINI_GENERATE_URL: LazyLock<reqwest::Url> = LazyLock::new(|| {
     reqwest::Url::parse("https://cloudcode-pa.googleapis.com/v1internal:generateContent")

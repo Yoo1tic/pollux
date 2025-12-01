@@ -1,9 +1,12 @@
 use axum::{
+    Json,
     extract::State,
     response::{IntoResponse, Response},
 };
+use serde_json::Value;
 
 use crate::api::gemini_client::GeminiClient;
+use crate::config::GEMINI_NATIVE_MODELS;
 use crate::middleware::gemini_request::GeminiPreprocess;
 use crate::middleware::gemini_response::{build_json_response, build_stream_response};
 use crate::{NexusError, router::NexusState};
@@ -22,4 +25,9 @@ pub async fn gemini_cli_handler(
     } else {
         Ok(build_json_response(upstream_resp).await.into_response())
     }
+}
+
+/// Fetch Gemini native model list via API key and proxy through Nexus.
+pub async fn gemini_models_handler() -> Result<Json<Value>, NexusError> {
+    Ok(Json(GEMINI_NATIVE_MODELS.clone()))
 }
