@@ -147,7 +147,7 @@ pub static GOOGLE_USERINFO_URI: LazyLock<Url> = LazyLock::new(|| {
 
 pub static OAUTH_CALLBACK_URL: LazyLock<RedirectUrl> = LazyLock::new(|| {
     let mut url = CONFIG.oauth_callback_domain.clone();
-    url.set_path("auth/callback");
+    url.set_path("oauth2callback");
     url.set_query(None);
     RedirectUrl::new(url.to_string())
         .expect("valid OAuth callback URL built from OAUTH_CALLBACK_DOMAIN")

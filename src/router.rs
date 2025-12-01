@@ -74,7 +74,7 @@ pub fn nexus_router(state: NexusState) -> Router {
 
     let oauth = Router::new()
         .route("/auth/{secret}", get(google_oauth_entry))
-        .route("/auth/callback", get(google_oauth_callback));
+        .route("/oauth2callback", get(google_oauth_callback));
 
     Router::new().merge(oauth).merge(authed).with_state(state)
 }

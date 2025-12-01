@@ -14,6 +14,7 @@ use oauth2::{AuthorizationCode, CsrfToken, PkceCodeChallenge, PkceCodeVerifier};
 use serde::Deserialize;
 use serde_json::Value;
 use subtle::ConstantTimeEq;
+use time::Duration;
 use tracing::info;
 
 #[derive(Debug, Deserialize)]
@@ -158,7 +159,6 @@ fn store_oauth_cookies(
     csrf: &CsrfToken,
     pkce_verifier: &str,
 ) -> PrivateCookieJar {
-    let jar = clear_oauth_cookies(jar);
     jar.add(build_cookie(CSRF_COOKIE, csrf.secret().to_string()))
         .add(build_cookie(PKCE_COOKIE, pkce_verifier.to_string()))
 }
@@ -197,6 +197,7 @@ fn build_cookie(name: &str, value: String) -> Cookie<'static> {
         .path("/")
         .http_only(true)
         .same_site(SameSite::Lax)
+        .max_age(Duration::minutes(15))
         .build()
 }
 
