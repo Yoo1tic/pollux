@@ -1,4 +1,3 @@
-use crate::config::CONFIG;
 use crate::google_oauth::credentials::GoogleCredential;
 use crate::google_oauth::endpoints::GoogleOauthEndpoints;
 use crate::google_oauth::service::GoogleOauthService;
@@ -7,15 +6,13 @@ use crate::types::google_code_assist::{LoadCodeAssistResponse, OnboardOperationR
 use crate::{NexusError, router::NexusState};
 use axum::{
     Json,
-    extract::{Path, Query, State},
-    http::StatusCode,
+    extract::{Query, State},
     response::{IntoResponse, Redirect},
 };
 use axum_extra::extract::cookie::{Cookie, PrivateCookieJar, SameSite};
 use oauth2::{AuthorizationCode, PkceCodeChallenge, PkceCodeVerifier};
 use reqwest::Client;
 use serde::Deserialize;
-use subtle::ConstantTimeEq;
 use time::Duration;
 use tracing::{debug, error, info};
 
@@ -27,15 +24,8 @@ pub struct AuthCallbackQuery {
     pub code: String,
     pub state: String,
 }
-/// GET /auth/:secret
-pub async fn google_oauth_entry(
-    Path(secret): Path<String>,
-    jar: PrivateCookieJar,
-) -> Result<impl IntoResponse, NexusError> {
-    if !bool::from(secret.as_bytes().ct_eq(CONFIG.nexus_key.as_bytes())) {
-        return Ok(StatusCode::NOT_FOUND.into_response());
-    }
-
+/// GET /auth
+pub async fn google_oauth_entry(jar: PrivateCookieJar) -> Result<impl IntoResponse, NexusError> {
     let (challenge, verifier) = PkceCodeChallenge::new_random_sha256();
     let (auth_url, csrf_token) = GoogleOauthEndpoints::build_authorize_url(challenge);
 

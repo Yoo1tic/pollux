@@ -4,6 +4,7 @@ use crate::service::credentials_actor::CredentialsHandle;
 use axum::{
     Router,
     extract::FromRef,
+    http::StatusCode,
     middleware,
     routing::{get, post},
 };
@@ -60,21 +61,29 @@ impl FromRef<NexusState> for Key {
     }
 }
 
+async fn not_found_handler() -> StatusCode {
+    StatusCode::NOT_FOUND
+}
+
 pub fn nexus_router(state: NexusState) -> Router {
     use crate::handlers::gemini::{
         gemini_cli_handler, gemini_models_handler, openai_models_handler,
     };
     use crate::middleware::auth::RequireKeyAuth;
 
-    let authed = Router::new()
+    let gemini = Router::new()
         .route("/v1beta/models", get(gemini_models_handler))
         .route("/v1beta/openai/models", get(openai_models_handler))
         .route("/v1beta/models/{*path}", post(gemini_cli_handler))
         .layer(middleware::from_extractor::<RequireKeyAuth>());
 
     let oauth = Router::new()
-        .route("/auth/{secret}", get(google_oauth_entry))
+        .route("/auth", get(google_oauth_entry))
         .route("/oauth2callback", get(google_oauth_callback));
 
-    Router::new().merge(oauth).merge(authed).with_state(state)
+    Router::new()
+        .merge(oauth)
+        .merge(gemini)
+        .fallback(not_found_handler)
+        .with_state(state)
 }
