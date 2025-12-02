@@ -2,6 +2,7 @@ use super::endpoints::GoogleOauthEndpoints;
 use crate::error::NexusError;
 use crate::google_oauth::credentials::GoogleCredential;
 use crate::google_oauth::utils::attach_email_from_id_token;
+use crate::types::google_code_assist::UserTier;
 use crate::{config::CONFIG, error::IsRetryable};
 use backon::{ExponentialBuilder, Retryable};
 use futures::stream::{self, StreamExt};
@@ -139,6 +140,35 @@ impl GoogleOauthService {
         .notify(|err, dur: Duration| {
             warn!(
                 "loadCodeAssist retrying after error {}, sleeping {:?}",
+                err, dur
+            );
+        })
+        .await
+    }
+
+    /// Provision a companion project with network-aware retries (no polling).
+    pub async fn onboard_code_assist_with_retry(
+        access_token: impl AsRef<str>,
+        tier: UserTier,
+        cloudaicompanion_project: Option<String>,
+        http_client: reqwest::Client,
+    ) -> Result<Value, NexusError> {
+        let retry_policy = default_retry_policy();
+
+        (|| async {
+            GoogleOauthEndpoints::onboard_code_assist(
+                access_token.as_ref(),
+                tier,
+                cloudaicompanion_project.clone(),
+                http_client.clone(),
+            )
+            .await
+        })
+        .retry(retry_policy)
+        .when(|e: &NexusError| e.is_retryable())
+        .notify(|err, dur: Duration| {
+            warn!(
+                "onboardCodeAssist retrying after error {}, sleeping {:?}",
                 err, dur
             );
         })

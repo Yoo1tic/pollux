@@ -3,6 +3,7 @@ use crate::config::{
 };
 use crate::error::NexusError;
 use crate::google_oauth::credentials::GoogleCredential;
+use crate::types::google_code_assist::UserTier;
 
 use oauth2::{
     AuthUrl, AuthorizationCode, Client as OAuth2Client, ClientId, ClientSecret, CsrfToken,
@@ -52,7 +53,7 @@ impl OnboardMetadata {
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct OnboardRequest {
-    tier_id: String,
+    tier_id: UserTier,
     #[serde(skip_serializing_if = "Option::is_none")]
     cloudaicompanion_project: Option<String>,
     metadata: OnboardMetadata,
@@ -144,7 +145,7 @@ impl GoogleOauthEndpoints {
     /// Call Cloud Code's onboardCodeAssist to provision a companion project and tier.
     pub(crate) async fn onboard_code_assist(
         access_token: impl AsRef<str>,
-        tier_id: impl AsRef<str>,
+        tier: UserTier,
         cloudaicompanion_project: Option<String>,
         http_client: reqwest::Client,
     ) -> Result<Value, NexusError> {
@@ -154,7 +155,7 @@ impl GoogleOauthEndpoints {
         }
 
         let request = OnboardRequest {
-            tier_id: tier_id.as_ref().to_string(),
+            tier_id: tier,
             cloudaicompanion_project,
             metadata,
         };

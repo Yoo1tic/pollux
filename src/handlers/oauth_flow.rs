@@ -2,7 +2,9 @@ use crate::google_oauth::credentials::GoogleCredential;
 use crate::google_oauth::endpoints::GoogleOauthEndpoints;
 use crate::google_oauth::service::GoogleOauthService;
 use crate::google_oauth::utils::attach_email_from_id_token;
-use crate::types::google_code_assist::{LoadCodeAssistResponse, OnboardOperationResponse};
+use crate::types::google_code_assist::{
+    LoadCodeAssistResponse, OnboardOperationResponse, UserTier,
+};
 use crate::{NexusError, router::NexusState};
 use axum::{
     Json,
@@ -14,6 +16,7 @@ use oauth2::{AuthorizationCode, PkceCodeChallenge, PkceCodeVerifier};
 use reqwest::Client;
 use serde::Deserialize;
 use time::Duration;
+use tokio::time::{Duration as TokioDuration, sleep};
 use tracing::{debug, error, info};
 
 const CSRF_COOKIE: &str = "oauth_csrf_token";
@@ -109,13 +112,12 @@ async fn process_oauth_exchange(
         .clone()
         .ok_or(NexusError::MissingAccessToken)?;
 
-    let (project_id, tier_id) =
-        ensure_companion_project(access_token.as_str(), &state.client).await?;
+    let (project_id, tier) = ensure_companion_project(access_token.as_str(), &state.client).await?;
 
     credential.project_id = project_id.clone();
     info!(
         project_id = %project_id,
-        tier = %tier_id,
+        tier = %tier.as_str(),
         "loadCodeAssist resolved companion project id"
     );
 
@@ -130,7 +132,7 @@ async fn process_oauth_exchange(
 async fn ensure_companion_project(
     access_token: &str,
     client: &Client,
-) -> Result<(String, String), NexusError> {
+) -> Result<(String, UserTier), NexusError> {
     let load_json =
         GoogleOauthService::load_code_assist_with_retry(access_token, client.clone()).await?;
     debug!(body = %load_json, "loadCodeAssist upstream body");
@@ -152,58 +154,22 @@ async fn ensure_companion_project(
         });
     }
 
-    let tier_id = load_resp
-        .allowed_tiers
-        .first()
-        .and_then(|t| t.quota_tier.clone())
-        .or_else(|| load_resp.current_tier.and_then(|t| t.quota_tier))
-        .unwrap_or_else(|| "standard-tier".to_string());
+    let tier = load_resp
+        .current_tier
+        .as_ref()
+        .and_then(|t| t.quota_tier)
+        .or_else(|| load_resp.allowed_tiers.first().and_then(|t| t.quota_tier))
+        .unwrap_or(UserTier::Standard)
+        .normalized();
 
     if let Some(existing_project_id) = load_resp.cloudaicompanion_project {
-        return Ok((existing_project_id, tier_id));
+        return Ok((existing_project_id, tier));
     }
 
     info!("No existing companion project found, starting onboarding...");
-    let new_project_id = perform_onboarding(access_token, tier_id.clone(), client).await?;
+    let new_project_id = perform_onboarding(access_token, tier, client).await?;
 
-    Ok((new_project_id, tier_id))
-}
-
-async fn perform_onboarding(
-    access_token: &str,
-    tier_id: String,
-    client: &Client,
-) -> Result<String, NexusError> {
-    let resp_json = GoogleOauthEndpoints::onboard_code_assist(
-        access_token.to_string(),
-        tier_id,
-        None,
-        client.clone(),
-    )
-    .await?;
-    debug!(body = %resp_json, "onboardCodeAssist upstream body");
-
-    let op_resp: OnboardOperationResponse =
-        serde_json::from_value(resp_json.clone()).map_err(NexusError::JsonError)?;
-
-    if !op_resp.done {
-        return Err(NexusError::OauthFlowError {
-            code: "ONBOARD_IN_PROGRESS".to_string(),
-            message: "Companion project provisioning is still in progress; retry shortly."
-                .to_string(),
-            details: Some(resp_json.clone()),
-        });
-    }
-
-    op_resp
-        .response
-        .and_then(|r| r.project_details)
-        .map(|p| p.id)
-        .ok_or_else(|| NexusError::OauthFlowError {
-            code: "ONBOARD_FAILED".to_string(),
-            message: "Onboarding completed but returned no project ID".to_string(),
-            details: Some(resp_json),
-        })
+    Ok((new_project_id, tier))
 }
 
 fn take_oauth_cookies(jar: PrivateCookieJar) -> (PrivateCookieJar, Option<(String, String)>) {
@@ -224,7 +190,59 @@ fn build_cookie(name: &'static str, value: String) -> Cookie<'static> {
     Cookie::build((name, value))
         .path("/")
         .http_only(true)
+        .secure(true)
         .same_site(SameSite::Lax)
         .max_age(Duration::minutes(15))
         .build()
+}
+
+async fn perform_onboarding(
+    access_token: &str,
+    tier: UserTier,
+    client: &Client,
+) -> Result<String, NexusError> {
+    const MAX_ATTEMPTS: usize = 5;
+    const RETRY_DELAY: TokioDuration = TokioDuration::from_secs(5);
+    let mut last_resp: Option<serde_json::Value> = None;
+
+    for attempt in 1..=MAX_ATTEMPTS {
+        let resp_json = GoogleOauthService::onboard_code_assist_with_retry(
+            access_token,
+            tier,
+            None,
+            client.clone(),
+        )
+        .await?;
+        debug!(body = %resp_json, "onboardCodeAssist upstream body");
+
+        last_resp = Some(resp_json.clone());
+        let op_resp: OnboardOperationResponse =
+            serde_json::from_value(resp_json.clone()).map_err(NexusError::JsonError)?;
+
+        if op_resp.done {
+            return op_resp
+                .response
+                .and_then(|r| r.project_details)
+                .map(|p| p.id)
+                .ok_or_else(|| NexusError::OauthFlowError {
+                    code: "ONBOARD_FAILED".to_string(),
+                    message: "Onboarding completed but returned no project ID".to_string(),
+                    details: Some(resp_json),
+                });
+        }
+
+        if attempt < MAX_ATTEMPTS {
+            info!(
+                "onboardCodeAssist pending (attempt {}/{}), retrying in {:?}...",
+                attempt, MAX_ATTEMPTS, RETRY_DELAY
+            );
+            sleep(RETRY_DELAY).await;
+        }
+    }
+
+    Err(NexusError::OauthFlowError {
+        code: "ONBOARD_TIMEOUT".to_string(),
+        message: "Companion project provisioning timed out".to_string(),
+        details: last_resp,
+    })
 }
