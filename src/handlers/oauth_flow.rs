@@ -1,6 +1,7 @@
 use crate::config::CONFIG;
 use crate::google_oauth::credentials::GoogleCredential;
 use crate::google_oauth::endpoints::GoogleOauthEndpoints;
+use crate::google_oauth::utils::attach_email_from_id_token;
 use crate::{NexusError, router::NexusState};
 use axum::{
     Json,
@@ -9,7 +10,6 @@ use axum::{
     response::{IntoResponse, Redirect, Response},
 };
 use axum_extra::extract::cookie::{Cookie, PrivateCookieJar, SameSite};
-use base64::Engine;
 use oauth2::{AuthorizationCode, CsrfToken, PkceCodeChallenge, PkceCodeVerifier};
 use serde::Deserialize;
 use serde_json::Value;
@@ -42,7 +42,10 @@ pub async fn google_oauth_entry(
 
     let jar = store_oauth_cookies(jar, &csrf_token, &pkce_verifier);
 
-    info!("Dispatching OAuth redirect");
+    info!(
+        "Dispatching OAuth redirect, Auth URL: {}",
+        auth_url.as_ref()
+    );
     Ok((jar, Redirect::temporary(auth_url.as_ref())).into_response())
 }
 
@@ -128,30 +131,6 @@ pub async fn google_oauth_callback(
 
     info!("OAuth callback stored credential");
     (jar, Json(credential)).into_response()
-}
-
-fn attach_email_from_id_token(token_value: &mut Value) {
-    let Some(id_token) = token_value.get("id_token").and_then(|v| v.as_str()) else {
-        return;
-    };
-    let Some(payload_b64) = id_token.split('.').nth(1) else {
-        return;
-    };
-    let Some(decoded) = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(payload_b64)
-        .ok()
-    else {
-        return;
-    };
-    let Ok(payload_json) = serde_json::from_slice::<Value>(&decoded) else {
-        return;
-    };
-    let Some(email) = payload_json.get("email").and_then(|e| e.as_str()) else {
-        return;
-    };
-    if let Some(obj) = token_value.as_object_mut() {
-        obj.insert("email".to_string(), Value::String(email.to_string()));
-    }
 }
 
 fn store_oauth_cookies(

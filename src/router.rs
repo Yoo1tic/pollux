@@ -1,5 +1,5 @@
 use crate::config::{CLI_USER_AGENT, CONFIG, COOKIE_KEY};
-use crate::handlers::google_oauth::{google_oauth_callback, google_oauth_entry};
+use crate::handlers::oauth_flow::{google_oauth_callback, google_oauth_entry};
 use crate::service::credentials_actor::CredentialsHandle;
 use axum::{
     Router,

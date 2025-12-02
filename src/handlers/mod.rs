@@ -1,2 +1,2 @@
 pub mod gemini;
-pub mod google_oauth;
+pub mod oauth_flow;

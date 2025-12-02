@@ -1,10 +1,9 @@
 use super::endpoints::GoogleOauthEndpoints;
 use crate::error::NexusError;
 use crate::google_oauth::credentials::GoogleCredential;
+use crate::google_oauth::utils::attach_email_from_id_token;
 use crate::{config::CONFIG, error::IsRetryable};
 use backon::{ExponentialBuilder, Retryable};
-use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use futures::stream::{self, StreamExt};
 use reqwest::header::{CONNECTION, HeaderMap, HeaderValue};
 use serde_json::Value;
@@ -150,22 +149,7 @@ async fn refresh_inner(
             .await?;
     let mut payload: Value = serde_json::to_value(&payload)?;
     debug!("Token response payload: {}", payload);
-    if let Some(email) = payload
-        .get("id_token")
-        .and_then(|t| t.as_str())
-        .and_then(|token| token.split('.').nth(1))
-        .and_then(|payload_b64| URL_SAFE_NO_PAD.decode(payload_b64).ok())
-        .and_then(|decoded| serde_json::from_slice::<Value>(&decoded).ok())
-        .and_then(|payload_json| {
-            payload_json
-                .get("email")
-                .and_then(|e| e.as_str())
-                .map(|s| s.to_string())
-        })
-        && let Some(obj) = payload.as_object_mut()
-    {
-        obj.insert("email".to_string(), Value::String(email));
-    }
+    attach_email_from_id_token(&mut payload);
     creds.update_credential(&payload)?;
     Ok(())
 }

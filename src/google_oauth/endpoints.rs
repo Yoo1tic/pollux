@@ -25,7 +25,6 @@ pub(crate) static DEFAULT_SCOPES: LazyLock<Vec<Scope>> = LazyLock::new(|| {
         Scope::new("https://www.googleapis.com/auth/cloud-platform".to_string()),
         Scope::new("https://www.googleapis.com/auth/userinfo.email".to_string()),
         Scope::new("https://www.googleapis.com/auth/userinfo.profile".to_string()),
-        Scope::new("openid".to_string()),
     ]
 });
 
