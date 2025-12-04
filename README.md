@@ -4,19 +4,21 @@
 
 ## Highlights
 
-- **Gemini CLI parity**: accepts the same `/v1beta/models/{model}:generateContent` and `:streamGenerateContent` payloads that the official `geminicli` uses and keeps the native Cloud Code URL/response envelope intact upstream.
-- **Gemini-native output**: normalizes CLI envelopes (including SSE events) into the standard Gemini `candidates/usageMetadata/modelVersion` shape so existing dashboards and SDKs can consume the responses directly.
+- **Gemini-native proxy for the official CLI**: accepts `/v1beta/models/{model}:generateContent` and `:streamGenerateContent` payloads from `geminicli` while converting upstream CLI envelopes back into the standard Gemini response shape.
+- **SSE-friendly normalization**: streaming events land in the Gemini-native `candidates/usageMetadata/modelVersion` shape so dashboards and SDKs can consume them directly.
 - **Credential pool with actor scheduling**: a `ractor`-driven worker manages Google OAuth credentials stored in SQLite, separates “big” and “tiny” model queues, cools down projects that hit 429, and refreshes tokens only when a credential is near expiry or fails authentication.
-- **Operable out of the box**: `.env` configuration via Figment/dotenvy, WAL-enabled SQLite (`data.db`) that bootstraps automatically, structured tracing, and a `mimalloc` global allocator for predictable latency.
+- **Operable out of the box**: `.env` configuration via Figment/dotenvy, SQLite (`data.db`) that bootstraps automatically, structured tracing, and a `mimalloc` global allocator for predictable latency.
+- **One-click browser auth**: hitting `/auth` in a browser jumps straight to Google OAuth for login/consent.
 
 ## Quick start
 
 ### Prerequisites
 
-- Rust 1.78+ (Edition 2024) with `cargo` and a recent `sqlx-cli` compatible SQLite (libsqlite3) on the host.
 - Google Cloud projects that already have Gemini CLI access; export each account as the JSON blob that contains `client_id`, `client_secret`, `refresh_token`, `project_id`, etc.
+- For the prebuilt binary: Linux host with SQLite available (no Rust toolchain required).
+- For containers: Docker + docker compose. Building from source remains possible with Rust 1.78+ if needed.
 
-### Bootstrapping
+### Run the prebuilt binary
 
 1. Copy the sample environment file and fill in secrets:
    ```bash
@@ -24,22 +26,37 @@
    # edit NEXUS_KEY plus (optionally) DATABASE_URL, BIGMODEL_LIST, PROXY...
    ```
 2. Drop every Gemini credential JSON into the folder referenced by `CRED_PATH` (default `./credentials`). On startup the actor will normalize, refresh, and persist them into SQLite. Additions today require a restart to be ingested.
-3. Launch the proxy (cargo or prebuilt binary):
+3. Download the latest release binary for your platform, make it executable, and run it from the project root:
    ```bash
-   cargo run --release
-   # or, if you already built/downloaded the binary, run it directly
+   chmod +x gcli-nexus
    ./gcli-nexus
    ```
-   The server binds `0.0.0.0:8000`. Logs reveal how many credentials were activated and whether a proxy is in use.
+   The server binds `0.0.0.0:8188`. Logs reveal how many credentials were activated and whether a proxy is in use.
 
-For production deployments build the binary once (`cargo build --release`) and run it under your supervisor (systemd, container, etc.). `MiMalloc` is compiled in automatically; no extra tuning is required.
+### Run with docker compose
+
+1. Copy the compose template and set secrets:
+   ```bash
+   cp docker-compose.yml.example docker-compose.yml
+   # edit NEXUS_KEY and other options in docker-compose.yml
+   ```
+2. Ensure local folders exist for persistence and credentials:
+   ```bash
+   mkdir -p data credentials
+   # place credential JSON files under ./credentials
+   ```
+3. Start the stack:
+   ```bash
+   docker compose up -d
+   ```
+   The service listens on `0.0.0.0:8188` and stores SQLite data under `./data`.
 
 ## Configuration
 
 | Env var                              | Required | Default            | Description                                                                                                           |
 | ------------------------------------ | -------- | ------------------ | --------------------------------------------------------------------------------------------------------------------- |
 | `NEXUS_KEY`                          | Yes      | _none_             | Shared secret checked on every request via `x-goog-api-key`, `Authorization: Bearer`, or `?key=`.                     |
-| `DATABASE_URL`                       | No       | `sqlite://data.db` | SQLite DSN; the actor enables WAL and creates the file/migrations automatically.                                      |
+| `DATABASE_URL`                       | No       | `sqlite://data.db` | SQLite DSN; the actor creates the file/migrations automatically.                                                      |
 | `LOGLEVEL`                           | No       | `info`             | Tracing level (`error`, `warn`, `info`, `debug`, `trace`). `RUST_LOG` still works as a fallback.                      |
 | `BIGMODEL_LIST`                      | No       | `[]`               | JSON array of model names treated as “big”. They get their own queue/cooldown bucket to avoid starving lighter chats. |
 | `CRED_PATH`                          | No       | unset              | Directory that is scanned once during startup for credential JSON; leave unset to rely purely on SQLite contents.     |
@@ -62,11 +79,12 @@ For production deployments build the binary once (`cargo build --release`) and r
 
 - Send `x-goog-api-key: <NEXUS_KEY>` (preferred).
 - Or append `?key=<NEXUS_KEY>` to the request URL.
+- Visit `/auth` in a browser to be redirected to Google OAuth for login/consent.
 
 ### Generate content (non-streaming)
 
 ```bash
-curl -X POST http://localhost:8000/v1beta/models/gemini-2.5-pro:generateContent \
+curl -X POST http://localhost:8188/v1beta/models/gemini-2.5-pro:generateContent \
   -H "x-goog-api-key: $NEXUS_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -78,7 +96,7 @@ curl -X POST http://localhost:8000/v1beta/models/gemini-2.5-pro:generateContent 
 
 ```bash
 curl --no-buffer -X POST \
-  http://localhost:8000/v1beta/models/gemini-2.5-pro:streamGenerateContent \
+  http://localhost:8188/v1beta/models/gemini-2.5-pro:streamGenerateContent \
   -H "x-goog-api-key: $NEXUS_KEY" \
   -H "Content-Type: application/json" \
   -d '{"contents":[{"role":"user","parts":[{"text":"stream"}]}]}'
@@ -93,7 +111,7 @@ curl --no-buffer -X POST \
 ## Operations
 
 - **Logging**: Structured tracing goes to stdout; set `LOGLEVEL=debug` for detailed actor logs (queue lengths, refresh states). Use `RUST_LOG` for per-module overrides.
-- **Database**: `data.db` lives at the path inside `DATABASE_URL`. WAL mode reduces writer stalls; backup the file periodically if you care about history.
+- **Database**: `data.db` lives at the path inside `DATABASE_URL`; backup the file periodically if you care about history.
 - **Proxying**: Set `PROXY` (e.g. `http://127.0.0.1:1080`) if your network requires outbound proxying; both Gemini traffic and OAuth refresh calls use it.
 - **Credential rotation**: Update the JSON file, restart the binary, or seed SQLite manually; the actor upserts by `project_id`.
 - **Security**: Treat `.env`, `credentials/*.json`, and `data.db` as sensitive—they contain refresh and access tokens.
