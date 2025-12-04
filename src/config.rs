@@ -170,6 +170,16 @@ pub static GEMINI_STREAM_URL: LazyLock<reqwest::Url> = LazyLock::new(|| {
     .expect("valid Cloud Code streamGenerateContent URL with alt=sse")
 });
 
+pub static LOAD_CODE_ASSIST_URL: LazyLock<Url> = LazyLock::new(|| {
+    Url::parse("https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist")
+        .expect("valid Cloud Code loadCodeAssist URL")
+});
+
+pub static ONBOARD_CODE_ASSIST_URL: LazyLock<Url> = LazyLock::new(|| {
+    Url::parse("https://cloudcode-pa.googleapis.com/v1internal:onboardUser")
+        .expect("valid Cloud Code onboardUser URL")
+});
+
 /// Default IP address for the HTTP server listen address.
 pub fn default_listen_ip() -> IpAddr {
     Ipv4Addr::new(0, 0, 0, 0).into()

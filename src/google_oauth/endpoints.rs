@@ -1,5 +1,6 @@
 use crate::config::{
-    GCLI_CLIENT_ID, GCLI_CLIENT_SECRET, GOOGLE_AUTH_URL, GOOGLE_TOKEN_URI, OAUTH_CALLBACK_URL,
+    GCLI_CLIENT_ID, GCLI_CLIENT_SECRET, GOOGLE_AUTH_URL, GOOGLE_TOKEN_URI, LOAD_CODE_ASSIST_URL,
+    OAUTH_CALLBACK_URL, ONBOARD_CODE_ASSIST_URL,
 };
 use crate::error::NexusError;
 use crate::google_oauth::credentials::GoogleCredential;
@@ -22,9 +23,6 @@ use tracing::info;
 /// Stateless Google OAuth Endpoints.
 pub(crate) struct GoogleOauthEndpoints;
 
-const LOAD_CODE_ASSIST_URL: &str = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist";
-const ONBOARD_CODE_ASSIST_URL: &str =
-    "https://cloudcode-pa.googleapis.com/v1internal:onboardUser";
 const IDE_TYPE: &str = "IDE_UNSPECIFIED";
 const PLATFORM: &str = "PLATFORM_UNSPECIFIED";
 const PLUGIN_TYPE: &str = "GEMINI";
@@ -128,7 +126,7 @@ impl GoogleOauthEndpoints {
         http_client: reqwest::Client,
     ) -> Result<Value, NexusError> {
         let resp = http_client
-            .post(LOAD_CODE_ASSIST_URL)
+            .post(LOAD_CODE_ASSIST_URL.clone())
             .bearer_auth(access_token.as_ref())
             .json(&json!({}))
             .send()
@@ -161,7 +159,7 @@ impl GoogleOauthEndpoints {
         };
 
         let resp = http_client
-            .post(ONBOARD_CODE_ASSIST_URL)
+            .post(ONBOARD_CODE_ASSIST_URL.clone())
             .bearer_auth(access_token.as_ref())
             .json(&request)
             .send()
