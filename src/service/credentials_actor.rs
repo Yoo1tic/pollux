@@ -1,61 +1,21 @@
 use crate::config::CONFIG;
-use crate::db::sqlite::CredentialsStorage;
 use crate::error::NexusError;
 use crate::google_oauth::credentials::GoogleCredential;
-use crate::google_oauth::service::{GoogleOauthService, RefreshJob};
-use crate::service::classifier::{BigModelList, ModelClassifier};
+
+use crate::service::credential_manager::CredentialManager;
+pub use crate::service::credential_manager::{AssignedCredential, CredentialId};
+use crate::service::credential_ops::CredentialOps;
 
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::str::FromStr;
 use std::time::Duration;
-use tokio::sync::{mpsc, oneshot};
-use tokio::time::sleep;
 use tracing::{debug, error, info, warn};
-
-/// Unique ID bound 1:1 to a specific credential.
-/// Now maps to the database autoincrement id.
-pub type CredentialId = i64;
-
-/// Data returned when a credential is checked out from the actor.
-/// Only includes fields necessary for making requests.
-#[derive(Debug, Clone)]
-pub struct AssignedCredential {
-    pub id: CredentialId,
-    pub project_id: String,
-    pub access_token: String,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ModelTier {
-    Big,
-    Tiny,
-}
-
-impl ModelTier {
-    fn from_model(classifier: &BigModelList, model_name: &str) -> Self {
-        if classifier.is_big_model(model_name) {
-            ModelTier::Big
-        } else {
-            ModelTier::Tiny
-        }
-    }
-
-    fn label(&self) -> &'static str {
-        match self {
-            ModelTier::Big => "big",
-            ModelTier::Tiny => "tiny",
-        }
-    }
-}
 
 /// Public messages handled by the credentials actor.
 #[derive(Debug)]
 pub enum CredentialsActorMessage {
     /// Request one available credential for the given model. Err if none available.
     GetCredential(String, RpcReplyPort<Option<AssignedCredential>>),
-    /// Report rate limiting; start cooldown then re-enqueue when complete.
+    /// Report rate limiting; start cooldown with lazy re-enqueue.
     ReportRateLimit {
         id: CredentialId,
         cooldown: Duration,
@@ -70,8 +30,6 @@ pub enum CredentialsActorMessage {
     SubmitCredentials(Vec<GoogleCredential>),
 
     // Internal messages (sent by the actor itself)
-    /// Cooldown has completed; put credential back to the queue if still valid.
-    CooldownComplete { id: CredentialId, tier: ModelTier },
     /// Token refresh has completed; update stored credential and re-enqueue if ok.
     RefreshComplete {
         id: CredentialId,
@@ -142,87 +100,9 @@ impl CredentialsHandle {
 
 /// Internal state held by ractor-driven credentials actor
 struct CredentialsActorState {
-    refresh_tx: mpsc::UnboundedSender<RefreshJob>,
-
-    model_classifier: BigModelList,
-
-    // Scheduling + storage
-    bigmodel_queue: VecDeque<CredentialId>,
-    tinymodel_queue: VecDeque<CredentialId>,
-    creds: HashMap<CredentialId, GoogleCredential>,
-
-    // Runtime state
-    cooling_down_big: HashSet<CredentialId>,
-    cooling_down_tiny: HashSet<CredentialId>,
-    refreshing: HashSet<CredentialId>,
-
-    // Storage layer for credentials persistence
-    storage: CredentialsStorage,
-}
-
-impl CredentialsActorState {
-    fn project_id_of(&self, id: CredentialId) -> Option<&str> {
-        self.creds.get(&id).map(|c| c.project_id.as_str())
-    }
-
-    fn remove_from_all_queues(&mut self, target: CredentialId) {
-        self.bigmodel_queue.retain(|&x| x != target);
-        self.tinymodel_queue.retain(|&x| x != target);
-    }
-
-    fn clear_from_cooldowns(&mut self, target: CredentialId) -> bool {
-        let removed_big = self.cooling_down_big.remove(&target);
-        let removed_tiny = self.cooling_down_tiny.remove(&target);
-        removed_big || removed_tiny
-    }
-
-    fn push_back_all(&mut self, id: CredentialId) {
-        self.push_back_for_tier(id, ModelTier::Big);
-        self.push_back_for_tier(id, ModelTier::Tiny);
-    }
-
-    fn push_back_for_tier(&mut self, id: CredentialId, tier: ModelTier) {
-        let queue = match tier {
-            ModelTier::Big => &mut self.bigmodel_queue,
-            ModelTier::Tiny => &mut self.tinymodel_queue,
-        };
-        if !queue.contains(&id) {
-            queue.push_back(id);
-        } else {
-            warn!(
-                "ID: {id}, already in {} queue; skip duplicate push",
-                tier.label()
-            );
-        }
-    }
-
-    fn remove_from_tier_queue(&mut self, target: CredentialId, tier: ModelTier) {
-        match tier {
-            ModelTier::Big => self.bigmodel_queue.retain(|&x| x != target),
-            ModelTier::Tiny => self.tinymodel_queue.retain(|&x| x != target),
-        }
-    }
-
-    fn queue_len(&self, tier: ModelTier) -> usize {
-        match tier {
-            ModelTier::Big => self.bigmodel_queue.len(),
-            ModelTier::Tiny => self.tinymodel_queue.len(),
-        }
-    }
-
-    fn cooling_len(&self, tier: ModelTier) -> usize {
-        match tier {
-            ModelTier::Big => self.cooling_down_big.len(),
-            ModelTier::Tiny => self.cooling_down_tiny.len(),
-        }
-    }
-
-    fn pop_for_tier(&mut self, tier: ModelTier) -> Option<CredentialId> {
-        match tier {
-            ModelTier::Big => self.bigmodel_queue.pop_front(),
-            ModelTier::Tiny => self.tinymodel_queue.pop_front(),
-        }
-    }
+    ops: CredentialOps,
+    manager: CredentialManager,
+    queue_keys: Vec<String>,
 }
 
 /// ractor-based credentials actor
@@ -239,51 +119,39 @@ impl Actor for CredentialsActor {
         _myself: ActorRef<Self::Msg>,
         _arguments: Self::Arguments,
     ) -> Result<Self::State, ActorProcessingErr> {
-        let svc = GoogleOauthService::new();
-        let refresh_tx = svc.refresh_tx();
-        let classifier = BigModelList::new(CONFIG.bigmodel_list.clone());
+        let ops = CredentialOps::new()
+            .await
+            .map_err(|e| ActorProcessingErr::from(format!("Credential ops init failed: {}", e)))?;
 
-        let mut bigmodel_queue = VecDeque::new();
-        let mut tinymodel_queue = VecDeque::new();
-        let mut creds = HashMap::new();
-        // Connect to DB and load active credentials. Any failure aborts startup.
-        let connect_opts = SqliteConnectOptions::from_str(CONFIG.database_url.as_str())
-            .map_err(|e| ActorProcessingErr::from(format!("DB opts parse failed: {}", e)))?
-            .create_if_missing(true);
-        let pool = SqlitePoolOptions::new()
-            .connect_with(connect_opts)
-            .await
-            .map_err(|e| ActorProcessingErr::from(format!("DB connect failed: {}", e)))?;
-        let storage = CredentialsStorage::new(pool);
-        storage
-            .init_schema()
-            .await
-            .map_err(|e| ActorProcessingErr::from(format!("DB init schema failed: {}", e)))?;
-        let rows = storage
-            .list_active()
+        let mut manager = CredentialManager::new();
+
+        let queue_keys = CONFIG.model_list.clone();
+
+        info!(
+            "CredentialsActor initializing with supported models: {:?}",
+            queue_keys
+        );
+
+        let rows = ops
+            .load_active()
             .await
             .map_err(|e| ActorProcessingErr::from(format!("DB load active creds failed: {}", e)))?;
-        for row in rows {
-            let id = row.id as CredentialId;
-            let cred: GoogleCredential = row.into();
-            bigmodel_queue.push_back(id);
-            tinymodel_queue.push_back(id);
-            creds.insert(id, cred);
+
+        for (id, cred) in rows {
+            // 将凭证添加到所有配置的模型队列中
+            manager.add_credential(id, cred, &queue_keys);
         }
+
         info!(
-            "CredentialsActor started from DB: {} active creds",
-            creds.len()
+            "CredentialsActor started from DB: {} active creds loaded into {} queues",
+            manager.total_creds(),
+            queue_keys.len()
         );
+
         Ok(CredentialsActorState {
-            refresh_tx,
-            model_classifier: classifier,
-            bigmodel_queue,
-            tinymodel_queue,
-            creds,
-            cooling_down_big: HashSet::new(),
-            cooling_down_tiny: HashSet::new(),
-            refreshing: HashSet::new(),
-            storage,
+            ops,
+            manager,
+            queue_keys, // 保存列表，以便后续 refresh/submit 使用
         })
     }
 
@@ -294,20 +162,24 @@ impl Actor for CredentialsActor {
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
         match message {
+            // --- 1. 获取凭证 ---
             CredentialsActorMessage::GetCredential(model_name, rp) => {
+                // 直接传递 model_name，不再进行 tier 转换
                 self.handle_get_credential(state, rp, &myself, model_name)
                     .await;
             }
+
+            // --- 2. 报告限流 ---
             CredentialsActorMessage::ReportRateLimit {
                 id,
                 cooldown,
                 model_name,
             } => {
-                self.handle_report_rate_limit(state, &myself, id, cooldown, model_name);
+                // 直接传递 model_name
+                self.handle_report_rate_limit(state, id, cooldown, model_name);
             }
+
             CredentialsActorMessage::ReportInvalid { id } => {
-                let pid = state.project_id_of(id).unwrap_or("-");
-                info!("ID: {id}, Project: {pid}, invalid reported; starting refresh");
                 self.handle_report_invalid(state, &myself, id).await;
             }
             CredentialsActorMessage::ReportBaned { id } => {
@@ -317,24 +189,8 @@ impl Actor for CredentialsActor {
                 self.handle_submit_credentials(state, &myself, creds_vec)
                     .await;
             }
-            CredentialsActorMessage::CooldownComplete { id, tier } => {
-                let removed = match tier {
-                    ModelTier::Big => state.cooling_down_big.remove(&id),
-                    ModelTier::Tiny => state.cooling_down_tiny.remove(&id),
-                };
-                if !removed {
-                    return Ok(());
-                }
-                if state.creds.contains_key(&id) {
-                    state.push_back_for_tier(id, tier);
-                    info!(
-                        "ID: {id}, Cooldown complete; push back {} queue",
-                        tier.label()
-                    );
-                }
-            }
             CredentialsActorMessage::RefreshComplete { id, result } => {
-                if !state.refreshing.remove(&id) {
+                if !state.manager.is_refreshing(id) {
                     return Ok(());
                 }
                 match result {
@@ -343,19 +199,20 @@ impl Actor for CredentialsActor {
                             "ID: {id}, Project: {}, Refresh completed successfully",
                             updated.project_id
                         );
-                        state.creds.insert(id, updated.clone());
-                        if let Err(e) = state.storage.update_by_id(id, updated.clone(), true).await
-                        {
+                        // 刷新成功后，重新加入所有支持的模型队列
+                        state
+                            .manager
+                            .add_credential(id, updated.clone(), &state.queue_keys);
+
+                        if let Err(e) = state.ops.update_by_id(id, updated.clone(), true).await {
                             warn!("ID: {id}, DB update after refresh failed: {}", e);
                         }
-                        state.push_back_all(id);
                     }
                     Err(e) => match e {
                         NexusError::Oauth2Server { .. } => {
                             error!("ID: {id}, Refresh failed; removing credential: {}", e);
-                            state.creds.remove(&id);
-                            state.remove_from_all_queues(id);
-                            if let Err(db_err) = state.storage.set_status(id, false).await {
+                            state.manager.delete_credential(id);
+                            if let Err(db_err) = state.ops.set_status(id, false).await {
                                 warn!("ID: {id}, DB set_status(false) failed: {}", db_err);
                             }
                         }
@@ -364,16 +221,20 @@ impl Actor for CredentialsActor {
                                 "ID: {id}, Refresh failed due to network/env (Transient): {}. Keeping credential.",
                                 e
                             );
-                            state.push_back_all(id);
+                            if let Some(existing) = state.manager.get_full_credential_copy(id) {
+                                state
+                                    .manager
+                                    .add_credential(id, existing, &state.queue_keys);
+                            }
                         }
                     },
                 }
             }
             CredentialsActorMessage::ActivateCredential { id, credential } => {
                 let project = credential.project_id.clone();
-                state.remove_from_all_queues(id);
-                state.creds.insert(id, credential);
-                state.push_back_all(id);
+                state
+                    .manager
+                    .add_credential(id, credential, &state.queue_keys);
                 info!("ID: {id}, Project: {project}, submitted and activated");
             }
         }
@@ -389,45 +250,35 @@ impl CredentialsActor {
         myself: &ActorRef<CredentialsActorMessage>,
         model_name: String,
     ) {
-        let tier = ModelTier::from_model(&state.model_classifier, &model_name);
-        info!(
-            "GetCredential start tier={}, queue_len={}, total_creds={}, cooling_big={}, cooling_tiny={}",
-            tier.label(),
-            state.queue_len(tier),
-            state.creds.len(),
-            state.cooling_down_big.len(),
-            state.cooling_down_tiny.len()
-        );
-        while let Some(id) = state.pop_for_tier(tier) {
-            let Some(cred_ref) = state.creds.get(&id) else {
-                warn!("ID: {id}, Missing credential for id; skipping");
-                continue;
-            };
-            if cred_ref.is_expired() || cred_ref.access_token.is_none() {
-                let _ = ractor::cast!(myself, CredentialsActorMessage::ReportInvalid { id });
-                continue;
-            }
-            let token = cred_ref.access_token.as_ref().unwrap().clone();
+        // 【改动点】直接使用 model_name 作为 queue_key
+        let queue_key = model_name;
+
+        // 调用 Manager 获取结果 (AssignResult)
+        let assignment = state.manager.get_assigned(&queue_key);
+
+        // 1. 处理副作用：Manager 发现并收集的过期凭证，Actor 负责去报修
+        for id in assignment.refresh_ids {
+            // 触发异步刷新逻辑
+            self.handle_report_invalid(state, myself, id).await;
+        }
+
+        // 2. 响应客户端
+        if let Some(assigned) = assignment.assigned {
             debug!(
-                "ID: {id}, Project: {}, queue: {}, get credential",
-                cred_ref.project_id,
-                tier.label()
+                "ID: {}, Project: {}, queue: {}, get credential",
+                assigned.id, assigned.project_id, queue_key
             );
-            let assigned = AssignedCredential {
-                id,
-                project_id: cred_ref.project_id.clone(),
-                access_token: token,
-            };
-            state.push_back_for_tier(id, tier);
             let _ = reply_port.send(Some(assigned));
             return;
         }
+
+        // 3. 如果没拿到，记录日志并返回 None
         warn!(
-            "No credential available for tier={}, queue_len={}, cooling_big={}, cooling_tiny={}",
-            tier.label(),
-            state.queue_len(tier),
-            state.cooling_down_big.len(),
-            state.cooling_down_tiny.len()
+            "No credential available for queue={}, queue_len={}, cooldowns={}, refreshing={}",
+            queue_key,
+            state.manager.queue_len(&queue_key),
+            state.manager.cooldown_len(),
+            state.manager.refreshing_len()
         );
         let _ = reply_port.send(None);
     }
@@ -435,105 +286,83 @@ impl CredentialsActor {
     fn handle_report_rate_limit(
         &self,
         state: &mut CredentialsActorState,
-        myself: &ActorRef<CredentialsActorMessage>,
         id: CredentialId,
         cooldown: Duration,
         model_name: String,
     ) {
-        if !state.creds.contains_key(&id) {
+        if !state.manager.contains(id) {
             return;
         }
-        let tier = ModelTier::from_model(&state.model_classifier, &model_name);
-        state.remove_from_tier_queue(id, tier);
-        let inserted = match tier {
-            ModelTier::Big => state.cooling_down_big.insert(id),
-            ModelTier::Tiny => state.cooling_down_tiny.insert(id),
-        };
-        if inserted {
-            let me = myself.clone();
-            tokio::spawn(async move {
-                sleep(cooldown).await;
-                let _ = ractor::cast!(me, CredentialsActorMessage::CooldownComplete { id, tier });
-            });
-            info!(
-                "ID: {id}, Credential starting cooldown for {} queue, will re-enqueue after cooldown {} secs",
-                tier.label(),
-                cooldown.as_secs(),
-            );
-        } else {
-            debug!(
-                "ID: {id}, tier={} already cooling; queue_len={}, cooling_len={}",
-                tier.label(),
-                state.queue_len(tier),
-                state.cooling_len(tier)
-            );
-        }
+        // 【改动点】直接使用 model_name 作为 queue_key
+        let queue_key = model_name;
+
+        state.manager.report_rate_limit(id, &queue_key, cooldown);
+
+        info!(
+            "ID: {id}, Credential starting cooldown for {} queue, lazy re-enqueue after {} secs",
+            queue_key,
+            cooldown.as_secs(),
+        );
     }
 
+    // handle_report_invalid, handle_report_baned, handle_submit_credentials
+    // 这些方法的逻辑不需要改动，它们只操作 ID 和 Credential，不涉及队列名称
     async fn handle_report_invalid(
         &self,
         state: &mut CredentialsActorState,
         myself: &ActorRef<CredentialsActorMessage>,
         id: CredentialId,
     ) {
-        if state.clear_from_cooldowns(id) {
-            debug!(
-                "ID: {id}, Upgrade: cooldown -> refresh (removed from cooling queues, big_len={}, tiny_len={})",
-                state.cooling_down_big.len(),
-                state.cooling_down_tiny.len()
-            );
-        }
-        if state.refreshing.contains(&id) {
+        if state.manager.is_refreshing(id) {
             debug!("ID: {id}, Already refreshing; skip duplicate");
             return;
         }
-        let Some(current) = state.creds.get(&id).cloned() else {
+        let Some(current) = state.manager.get_full_credential_copy(id) else {
             return;
         };
+        let pid = current.project_id.clone();
+        info!("ID: {id}, Project: {pid}, invalid reported; starting refresh");
 
-        state.remove_from_all_queues(id);
-        state.refreshing.insert(id);
-        let (tx_done, rx_done) = oneshot::channel();
-        let job = RefreshJob {
-            cred: current,
-            respond_to: tx_done,
-        };
-        match state.refresh_tx.send(job) {
-            Ok(_) => {
-                let me = myself.clone();
-                tokio::spawn(async move {
-                    let res = match rx_done.await {
-                        Ok(r) => r,
-                        Err(e) => Err(NexusError::RactorError(format!(
-                            "refresh result channel closed: {}",
-                            e
-                        ))),
-                    };
-                    let _ = ractor::cast!(
-                        me,
-                        CredentialsActorMessage::RefreshComplete { id, result: res }
-                    );
-                });
-                debug!("ID: {id}, Credential refresh enqueued");
-            }
+        state.manager.mark_refreshing(id);
+
+        // 此处逻辑保持不变...
+        let rx_done = match state.ops.enqueue_refresh(current.clone()) {
+            Ok(rx_done) => rx_done,
             Err(e) => {
-                state.refreshing.remove(&id);
-                state.push_back_all(id);
+                // 如果入队失败，恢复状态
+                state.manager.add_credential(id, current, &state.queue_keys);
                 warn!("ID: {id}, Failed to enqueue refresh job: {}", e);
+                return;
             }
-        }
+        };
+
+        let me = myself.clone();
+        tokio::spawn(async move {
+            let res = match rx_done.await {
+                Ok(r) => r,
+                Err(e) => Err(NexusError::RactorError(format!(
+                    "refresh result channel closed: {}",
+                    e
+                ))),
+            };
+            let _ = ractor::cast!(
+                me,
+                CredentialsActorMessage::RefreshComplete { id, result: res }
+            );
+        });
+        debug!("ID: {id}, Credential refresh enqueued");
     }
 
     async fn handle_report_baned(&self, state: &mut CredentialsActorState, id: CredentialId) {
         let project = state
+            .manager
             .project_id_of(id)
-            .map(|p| p.to_string())
             .unwrap_or_else(|| "-".to_string());
-        let removed_cred = state.creds.remove(&id).is_some();
-        state.remove_from_all_queues(id);
-        let removed_cooldown = state.clear_from_cooldowns(id);
-        let removed_refresh = state.refreshing.remove(&id);
-        if let Err(e) = state.storage.set_status(id, false).await {
+        let removed_cred = state.manager.contains(id);
+
+        state.manager.delete_credential(id);
+
+        if let Err(e) = state.ops.set_status(id, false).await {
             warn!(
                 "ID: {id}, Project: {project}, ban report failed to update DB status: {}",
                 e
@@ -541,8 +370,8 @@ impl CredentialsActor {
             return;
         }
         info!(
-            "ID: {id}, Project: {project}, credential banned; removed_cred={}, removed_cooldown={}, removed_refreshing={}",
-            removed_cred, removed_cooldown, removed_refresh
+            "ID: {id}, Project: {project}, banned. removed_from_mem={}",
+            removed_cred
         );
     }
 
@@ -553,47 +382,25 @@ impl CredentialsActor {
         creds_vec: Vec<GoogleCredential>,
     ) {
         let count = creds_vec.len();
-        info!(
-            count,
-            "Received batch credentials submission, dispatching background tasks..."
-        );
-        let refresh_tx = state.refresh_tx.clone();
-        let storage = state.storage.clone();
+        info!(count, "Batch submit received, dispatching...");
+        let ops = state.ops.clone();
 
         for cred in creds_vec.into_iter() {
             let pid = cred.project_id.clone();
-            let refresh_tx = refresh_tx.clone();
-            let storage = storage.clone();
+            let ops = ops.clone();
             let myself = myself.clone();
 
             tokio::spawn(async move {
-                let (tx_done, rx_done) = oneshot::channel();
-                let job = RefreshJob {
-                    cred,
-                    respond_to: tx_done,
+                // 刷新 -> 入库 -> 激活
+                let rx_done = match ops.enqueue_refresh(cred) {
+                    Ok(rx) => rx,
+                    Err(_) => return,
                 };
-                if let Err(e) = refresh_tx.send(job) {
-                    warn!(
-                        "Project: {pid}, failed to enqueue refresh before insert: {}",
-                        e
-                    );
-                    return;
-                }
                 let refreshed = match rx_done.await {
-                    Ok(Ok(updated)) => updated,
-                    Ok(Err(e)) => {
-                        warn!("Project: {pid}, refresh before insert failed: {}", e);
-                        return;
-                    }
-                    Err(e) => {
-                        warn!(
-                            "Project: {pid}, refresh channel closed before insert: {}",
-                            e
-                        );
-                        return;
-                    }
+                    Ok(Ok(u)) => u,
+                    _ => return,
                 };
-                match storage.upsert(refreshed.clone(), true).await {
+                match ops.upsert(refreshed.clone(), true).await {
                     Ok(id) => {
                         let _ = ractor::cast!(
                             myself,
@@ -603,18 +410,14 @@ impl CredentialsActor {
                             }
                         );
                     }
-                    Err(e) => {
-                        warn!("Project: {pid}, upsert failed: {}", e);
-                    }
+                    Err(e) => warn!("Project: {pid}, upsert failed: {}", e),
                 }
             });
         }
-        debug!(count, "Dispatch complete, actor is free.");
     }
 }
 
 /// Async spawn of the credentials actor and return a handle.
-/// Actor will connect to DB, init schema, and load active credentials.
 pub async fn spawn() -> CredentialsHandle {
     let (actor, _jh) = Actor::spawn(Some("CredentialsActor".to_string()), CredentialsActor, ())
         .await

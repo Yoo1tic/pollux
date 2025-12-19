@@ -53,10 +53,10 @@ pub struct Config {
     #[serde(default)]
     pub refresh_concurrency: usize,
 
-    /// List of Gemini model names treated as "big" models.
-    /// Env: `BIGMODEL_LIST`. Default: empty.
+    /// List of supported model names. Each name corresponds to a distinct credential queue.
+    /// Env: `MODEL_LIST`. Example: `["gemini-pro", "gemini-1.5-flash"]`.
     #[serde(default)]
-    pub bigmodel_list: Vec<String>,
+    pub model_list: Vec<String>,
 
     /// Optional directory containing credential files to preload at startup.
     /// Env: `CRED_PATH`. Example: `./credentials`. Default: unset (skip preload).
@@ -79,7 +79,7 @@ impl Default for Config {
             proxy: None,
             nexus_key: "pwd".to_string(),
             refresh_concurrency: 10,
-            bigmodel_list: Vec::new(),
+            model_list: vec!["gemini-2.5-pro".to_string()],
             cred_path: None,
             enable_multiplexing: false,
         }
