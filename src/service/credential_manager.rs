@@ -137,6 +137,34 @@ impl CredentialManager {
         result
     }
 
+    fn process_waiting_room(&mut self) {
+        let now = Instant::now();
+
+        while self.waiting_room.peek().map_or(false, |t| (t.0).0 <= now) {
+            let CooldownTicket(Reverse(ticket_deadline), credential_id, queue_key) =
+                self.waiting_room.pop().expect("peek guaranteed existence");
+
+            match self.cooldown_map.entry((credential_id, queue_key)) {
+                std::collections::hash_map::Entry::Occupied(entry)
+                    if ticket_deadline >= *entry.get() =>
+                {
+                    let ((reclaimed_cred_id, reclaimed_queue_key), _) = entry.remove_entry();
+                    self.queues
+                        .get_mut(&reclaimed_queue_key)
+                        .map(|target_queue| {
+                            target_queue.push_back(reclaimed_cred_id);
+                            tracing::info!(
+                                "Reclaiming credential {} from cooldown for queue {}",
+                                reclaimed_cred_id,
+                                reclaimed_queue_key
+                            );
+                        });
+                }
+                _ => {}
+            }
+        }
+    }
+
     pub fn queue_len(&self, key: impl AsRef<str>) -> usize {
         self.queues.get(key.as_ref()).map(|q| q.len()).unwrap_or(0)
     }
@@ -155,31 +183,6 @@ impl CredentialManager {
 
     pub fn cooldown_len(&self) -> usize {
         self.cooldown_map.len()
-    }
-
-    fn process_waiting_room(&mut self) {
-        let now = Instant::now();
-
-        while let Some(CooldownTicket(Reverse(ticket_deadline), _, _)) = self.waiting_room.peek() {
-            if *ticket_deadline > now {
-                break;
-            }
-
-            let CooldownTicket(Reverse(ticket_deadline), id, queue_key) = self
-                .waiting_room
-                .pop()
-                .expect("waiting room must match peek");
-            let map_key = (id, queue_key.clone());
-
-            if let Some(&real_deadline) = self.cooldown_map.get(&map_key) {
-                if ticket_deadline >= real_deadline {
-                    self.cooldown_map.remove(&map_key);
-                    if let Some(queue) = self.queues.get_mut(&queue_key) {
-                        queue.push_back(id);
-                    }
-                }
-            }
-        }
     }
 
     fn is_model_cooling(&self, id: CredentialId, key: impl AsRef<str>) -> bool {
