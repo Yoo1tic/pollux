@@ -94,28 +94,34 @@ impl CredentialManager {
         self.creds.contains_key(&id)
     }
 
-    pub fn get_assigned(&mut self, queue_key: &str) -> AssignmentResult {
+    pub fn get_assigned(&mut self, queue_key: impl AsRef<str>) -> AssignmentResult {
+        let queue_key = queue_key.as_ref();
         self.process_waiting_room();
 
         let mut result = AssignmentResult::default();
 
         while let Some(id) = self.queues.get_mut(queue_key).and_then(|q| q.pop_front()) {
-            if self.refreshing.contains(&id) {
-                continue;
-            }
-
-            let Some(cred) = self.creds.get(&id) else {
+            let Some(cred) = Some(id)
+                .filter(|id| !self.refreshing.contains(id))
+                .filter(|id| !self.is_model_cooling(*id, queue_key))
+                .and_then(|id| self.creds.get(&id))
+            else {
                 continue;
             };
 
-            if self.is_model_cooling(id, queue_key) {
-                continue;
-            }
-
-            if cred.is_expired() {
+            let Some(token) = cred
+                .access_token
+                .as_ref()
+                .filter(|_| !cred.is_expired())
+                .cloned()
+            else {
+                tracing::debug!(
+                    "Credential {} is unavailable (expired or missing token), scheduling refresh.",
+                    id
+                );
                 result.refresh_ids.push(id);
                 continue;
-            }
+            };
 
             if let Some(queue) = self.queues.get_mut(queue_key) {
                 queue.push_back(id);
@@ -124,18 +130,15 @@ impl CredentialManager {
             result.assigned = Some(AssignedCredential {
                 id,
                 project_id: cred.project_id.clone(),
-                access_token: cred
-                    .access_token
-                    .clone()
-                    .expect("Queue invariant: token exists"),
+                access_token: token,
             });
             return result;
         }
         result
     }
 
-    pub fn queue_len(&self, key: &str) -> usize {
-        self.queues.get(key).map(|q| q.len()).unwrap_or(0)
+    pub fn queue_len(&self, key: impl AsRef<str>) -> usize {
+        self.queues.get(key.as_ref()).map(|q| q.len()).unwrap_or(0)
     }
 
     pub fn total_creds(&self) -> usize {
@@ -179,8 +182,8 @@ impl CredentialManager {
         }
     }
 
-    fn is_model_cooling(&self, id: CredentialId, key: &str) -> bool {
-        match self.cooldown_map.get(&(id, key.to_string())) {
+    fn is_model_cooling(&self, id: CredentialId, key: impl AsRef<str>) -> bool {
+        match self.cooldown_map.get(&(id, key.as_ref().to_string())) {
             Some(deadline) => Instant::now() < *deadline,
             None => false,
         }
