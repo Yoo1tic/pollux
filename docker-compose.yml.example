@@ -19,8 +19,10 @@ services:
 
       CRED_PATH: /app/credentials
 
-      BIGMODEL_LIST: "[gemini-2.5-pro]"
+      # JSON array of Gemini models.
+      MODEL_LIST="[gemini-2.5-flash, gemini-2.5-pro, gemini-3-pro-preview]"
 
+      # OAuth refresh requests per second (TPS) for the refresh worker.
       OAUTH_TPS: 5
 
       # Max retry attempts for Gemini CLI upstream calls.

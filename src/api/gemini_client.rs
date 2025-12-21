@@ -27,7 +27,8 @@ impl GeminiClient {
         let retry_policy = ExponentialBuilder::default()
             .with_min_delay(Duration::from_millis(100))
             .with_max_delay(Duration::from_millis(300))
-            .with_max_times(CONFIG.gemini_retry_max_times);
+            .with_max_times(CONFIG.gemini_retry_max_times)
+            .with_jitter();
         Self {
             client,
             retry_policy,
