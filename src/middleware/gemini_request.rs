@@ -1,3 +1,4 @@
+use crate::config::CONFIG;
 use axum::{
     Json, RequestExt,
     extract::{FromRequest, Path, Request},
@@ -5,6 +6,9 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use serde_json::json;
+use std::collections::HashSet;
+use std::sync::LazyLock;
+use tracing::warn;
 
 // Move types to middleware: it is the handler layer
 pub type GeminiRequestBody = serde_json::Value;
@@ -18,6 +22,9 @@ pub struct GeminiContext {
 
 pub struct GeminiPreprocess(pub GeminiRequestBody, pub GeminiContext);
 
+static MODEL_SET: LazyLock<HashSet<String>> =
+    LazyLock::new(|| CONFIG.model_list.iter().cloned().collect());
+
 impl<S> FromRequest<S> for GeminiPreprocess
 where
     S: Send + Sync,
@@ -25,7 +32,6 @@ where
     type Rejection = Response;
 
     async fn from_request(mut req: Request, _state: &S) -> Result<Self, Self::Rejection> {
-        // Extract wildcard path as full remaining path under /models
         let Path(path) = match req.extract_parts::<Path<String>>().await {
             Ok(p) => p,
             Err(rejection) => return Err(rejection.into_response()),
@@ -45,6 +51,15 @@ where
         } else {
             last_seg
         };
+
+        if !MODEL_SET.contains(model.as_str()) {
+            warn!("Rejected request for unsupported model: {}", model);
+            return Err((
+                StatusCode::BAD_REQUEST,
+                Json(json!({ "error": "unsupported model", "model": model })),
+            )
+                .into_response());
+        }
 
         // Streaming decision: only `streamGenerateContent` is true; `generateContent` is false
         let stream = path.contains("streamGenerateContent");
