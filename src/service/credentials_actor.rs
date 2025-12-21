@@ -138,7 +138,6 @@ impl Actor for CredentialsActor {
             .map_err(|e| ActorProcessingErr::from(format!("DB load active creds failed: {}", e)))?;
 
         for (id, cred) in rows {
-            // 将凭证添加到所有配置的模型队列中
             manager.add_credential(id, cred, &queue_keys);
         }
 
@@ -151,7 +150,7 @@ impl Actor for CredentialsActor {
         Ok(CredentialsActorState {
             ops,
             manager,
-            queue_keys, // 保存列表，以便后续 refresh/submit 使用
+            queue_keys,
         })
     }
 
@@ -162,20 +161,16 @@ impl Actor for CredentialsActor {
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
         match message {
-            // --- 1. 获取凭证 ---
             CredentialsActorMessage::GetCredential(model_name, rp) => {
-                // 直接传递 model_name，不再进行 tier 转换
                 self.handle_get_credential(state, rp, &myself, model_name)
                     .await;
             }
 
-            // --- 2. 报告限流 ---
             CredentialsActorMessage::ReportRateLimit {
                 id,
                 cooldown,
                 model_name,
             } => {
-                // 直接传递 model_name
                 self.handle_report_rate_limit(state, id, cooldown, model_name);
             }
 
@@ -199,7 +194,7 @@ impl Actor for CredentialsActor {
                             "ID: {id}, Project: {}, Refresh completed successfully",
                             updated.project_id
                         );
-                        // 刷新成功后，重新加入所有支持的模型队列
+
                         state
                             .manager
                             .add_credential(id, updated.clone(), &state.queue_keys);
@@ -248,35 +243,28 @@ impl CredentialsActor {
         state: &mut CredentialsActorState,
         reply_port: RpcReplyPort<Option<AssignedCredential>>,
         myself: &ActorRef<CredentialsActorMessage>,
-        model_name: String,
+        model_name: impl AsRef<str>,
     ) {
-        // 【改动点】直接使用 model_name 作为 queue_key
-        let queue_key = model_name;
+        let query_key = model_name.as_ref();
+        let assignment = state.manager.get_assigned(&query_key);
 
-        // 调用 Manager 获取结果 (AssignResult)
-        let assignment = state.manager.get_assigned(&queue_key);
-
-        // 1. 处理副作用：Manager 发现并收集的过期凭证，Actor 负责去报修
         for id in assignment.refresh_ids {
-            // 触发异步刷新逻辑
             self.handle_report_invalid(state, myself, id).await;
         }
 
-        // 2. 响应客户端
         if let Some(assigned) = assignment.assigned {
             debug!(
                 "ID: {}, Project: {}, queue: {}, get credential",
-                assigned.id, assigned.project_id, queue_key
+                assigned.id, assigned.project_id, query_key
             );
             let _ = reply_port.send(Some(assigned));
             return;
         }
 
-        // 3. 如果没拿到，记录日志并返回 None
         warn!(
             "No credential available for queue={}, queue_len={}, cooldowns={}, refreshing={}",
-            queue_key,
-            state.manager.queue_len(&queue_key),
+            query_key,
+            state.manager.queue_len(&query_key),
             state.manager.cooldown_len(),
             state.manager.refreshing_len()
         );
@@ -288,25 +276,21 @@ impl CredentialsActor {
         state: &mut CredentialsActorState,
         id: CredentialId,
         cooldown: Duration,
-        model_name: String,
+        model_name: impl AsRef<str>,
     ) {
         if !state.manager.contains(id) {
             return;
         }
-        // 【改动点】直接使用 model_name 作为 queue_key
-        let queue_key = model_name;
-
-        state.manager.report_rate_limit(id, &queue_key, cooldown);
+        let query_key = model_name.as_ref();
+        state.manager.report_rate_limit(id, &query_key, cooldown);
 
         info!(
-            "ID: {id}, Credential starting cooldown for {} queue, lazy re-enqueue after {} secs",
-            queue_key,
+            "ID: {id}, Credential starting cooldown for {query_key} queue, lazy re-enqueue after {} secs",
             cooldown.as_secs(),
         );
     }
 
     // handle_report_invalid, handle_report_baned, handle_submit_credentials
-    // 这些方法的逻辑不需要改动，它们只操作 ID 和 Credential，不涉及队列名称
     async fn handle_report_invalid(
         &self,
         state: &mut CredentialsActorState,
@@ -325,11 +309,9 @@ impl CredentialsActor {
 
         state.manager.mark_refreshing(id);
 
-        // 此处逻辑保持不变...
         let rx_done = match state.ops.enqueue_refresh(current.clone()) {
             Ok(rx_done) => rx_done,
             Err(e) => {
-                // 如果入队失败，恢复状态
                 state.manager.add_credential(id, current, &state.queue_keys);
                 warn!("ID: {id}, Failed to enqueue refresh job: {}", e);
                 return;
@@ -391,7 +373,6 @@ impl CredentialsActor {
             let myself = myself.clone();
 
             tokio::spawn(async move {
-                // 刷新 -> 入库 -> 激活
                 let rx_done = match ops.enqueue_refresh(cred) {
                     Ok(rx) => rx,
                     Err(_) => return,
