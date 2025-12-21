@@ -29,6 +29,7 @@ eventsource-stream = "0.2"
 figment = { version = "0.10", features = ["env"] }
 tokio-stream = "0.1.17"
 time = "0.3"
+governor = "0.10.4"
 
 [build-dependencies]
 dotenvy = "0.15"

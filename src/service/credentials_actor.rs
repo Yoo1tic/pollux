@@ -1,13 +1,14 @@
-use crate::config::CONFIG;
 use crate::error::NexusError;
 use crate::google_oauth::credentials::GoogleCredential;
-
+use crate::google_oauth::service::GoogleOauthService;
 use crate::service::credential_manager::CredentialManager;
 pub use crate::service::credential_manager::{AssignedCredential, CredentialId};
 use crate::service::credential_ops::CredentialOps;
-
+use crate::types::job::RefreshOutcome;
+use crate::{config::CONFIG, types::job::JobInstruction};
 use ractor::{Actor, ActorProcessingErr, ActorRef, RpcReplyPort};
 use std::time::Duration;
+use tokio::sync::mpsc;
 use tracing::{debug, error, info, warn};
 
 /// Public messages handled by the credentials actor.
@@ -31,10 +32,7 @@ pub enum CredentialsActorMessage {
 
     // Internal messages (sent by the actor itself)
     /// Token refresh has completed; update stored credential and re-enqueue if ok.
-    RefreshComplete {
-        id: CredentialId,
-        result: Result<GoogleCredential, NexusError>,
-    },
+    RefreshComplete { outcome: RefreshOutcome },
     /// A credential has been refreshed and stored; activate it in memory queues.
     ActivateCredential {
         id: CredentialId,
@@ -96,6 +94,14 @@ impl CredentialsHandle {
             CredentialsActorMessage::SubmitCredentials(creds)
         );
     }
+
+    pub fn send_refresh_complete(
+        &self,
+        outcome: RefreshOutcome,
+    ) -> Result<(), ractor::MessagingErr<CredentialsActorMessage>> {
+        self.actor
+            .cast(CredentialsActorMessage::RefreshComplete { outcome })
+    }
 }
 
 /// Internal state held by ractor-driven credentials actor
@@ -103,6 +109,7 @@ struct CredentialsActorState {
     ops: CredentialOps,
     manager: CredentialManager,
     queue_keys: Vec<String>,
+    refresh_tx: mpsc::Sender<JobInstruction>,
 }
 
 /// ractor-based credentials actor
@@ -119,6 +126,10 @@ impl Actor for CredentialsActor {
         _myself: ActorRef<Self::Msg>,
         _arguments: Self::Arguments,
     ) -> Result<Self::State, ActorProcessingErr> {
+        let refresh_service = GoogleOauthService::new(CredentialsHandle {
+            actor: _myself.clone(),
+        });
+        let refresh_tx = refresh_service.job_tx();
         let ops = CredentialOps::new()
             .await
             .map_err(|e| ActorProcessingErr::from(format!("Credential ops init failed: {}", e)))?;
@@ -151,19 +162,19 @@ impl Actor for CredentialsActor {
             ops,
             manager,
             queue_keys,
+            refresh_tx,
         })
     }
 
     async fn handle(
         &self,
-        myself: ActorRef<Self::Msg>,
+        _myself: ActorRef<Self::Msg>,
         message: Self::Msg,
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
         match message {
             CredentialsActorMessage::GetCredential(model_name, rp) => {
-                self.handle_get_credential(state, rp, &myself, model_name)
-                    .await;
+                self.handle_get_credential(state, rp, model_name).await;
             }
 
             CredentialsActorMessage::ReportRateLimit {
@@ -175,55 +186,16 @@ impl Actor for CredentialsActor {
             }
 
             CredentialsActorMessage::ReportInvalid { id } => {
-                self.handle_report_invalid(state, &myself, id).await;
+                self.handle_report_invalid(state, id).await;
             }
             CredentialsActorMessage::ReportBaned { id } => {
                 self.handle_report_baned(state, id).await;
             }
             CredentialsActorMessage::SubmitCredentials(creds_vec) => {
-                self.handle_submit_credentials(state, &myself, creds_vec)
-                    .await;
+                self.handle_submit_credentials(state, creds_vec).await;
             }
-            CredentialsActorMessage::RefreshComplete { id, result } => {
-                if !state.manager.is_refreshing(id) {
-                    return Ok(());
-                }
-                match result {
-                    Ok(updated) => {
-                        debug!(
-                            "ID: {id}, Project: {}, Refresh completed successfully",
-                            updated.project_id
-                        );
-
-                        state
-                            .manager
-                            .add_credential(id, updated.clone(), &state.queue_keys);
-
-                        if let Err(e) = state.ops.update_by_id(id, updated.clone(), true).await {
-                            warn!("ID: {id}, DB update after refresh failed: {}", e);
-                        }
-                    }
-                    Err(e) => match e {
-                        NexusError::Oauth2Server { .. } => {
-                            error!("ID: {id}, Refresh failed; removing credential: {}", e);
-                            state.manager.delete_credential(id);
-                            if let Err(db_err) = state.ops.set_status(id, false).await {
-                                warn!("ID: {id}, DB set_status(false) failed: {}", db_err);
-                            }
-                        }
-                        _ => {
-                            warn!(
-                                "ID: {id}, Refresh failed due to network/env (Transient): {}. Keeping credential.",
-                                e
-                            );
-                            if let Some(existing) = state.manager.get_full_credential_copy(id) {
-                                state
-                                    .manager
-                                    .add_credential(id, existing, &state.queue_keys);
-                            }
-                        }
-                    },
-                }
+            CredentialsActorMessage::RefreshComplete { outcome } => {
+                self.handle_refresh_complete(state, outcome).await;
             }
             CredentialsActorMessage::ActivateCredential { id, credential } => {
                 let project = credential.project_id.clone();
@@ -242,14 +214,13 @@ impl CredentialsActor {
         &self,
         state: &mut CredentialsActorState,
         reply_port: RpcReplyPort<Option<AssignedCredential>>,
-        myself: &ActorRef<CredentialsActorMessage>,
         model_name: impl AsRef<str>,
     ) {
         let query_key = model_name.as_ref();
         let assignment = state.manager.get_assigned(&query_key);
 
         for id in assignment.refresh_ids {
-            self.handle_report_invalid(state, myself, id).await;
+            self.handle_report_invalid(state, id).await;
         }
 
         if let Some(assigned) = assignment.assigned {
@@ -291,12 +262,7 @@ impl CredentialsActor {
     }
 
     // handle_report_invalid, handle_report_baned, handle_submit_credentials
-    async fn handle_report_invalid(
-        &self,
-        state: &mut CredentialsActorState,
-        myself: &ActorRef<CredentialsActorMessage>,
-        id: CredentialId,
-    ) {
+    async fn handle_report_invalid(&self, state: &mut CredentialsActorState, id: CredentialId) {
         if state.manager.is_refreshing(id) {
             debug!("ID: {id}, Already refreshing; skip duplicate");
             return;
@@ -309,29 +275,18 @@ impl CredentialsActor {
 
         state.manager.mark_refreshing(id);
 
-        let rx_done = match state.ops.enqueue_refresh(current.clone()) {
-            Ok(rx_done) => rx_done,
-            Err(e) => {
-                state.manager.add_credential(id, current, &state.queue_keys);
-                warn!("ID: {id}, Failed to enqueue refresh job: {}", e);
-                return;
-            }
-        };
-
-        let me = myself.clone();
-        tokio::spawn(async move {
-            let res = match rx_done.await {
-                Ok(r) => r,
-                Err(e) => Err(NexusError::RactorError(format!(
-                    "refresh result channel closed: {}",
-                    e
-                ))),
-            };
-            let _ = ractor::cast!(
-                me,
-                CredentialsActorMessage::RefreshComplete { id, result: res }
-            );
-        });
+        if let Err(e) = state
+            .refresh_tx
+            .send(JobInstruction::Maintain {
+                id,
+                cred: current.clone(),
+            })
+            .await
+        {
+            state.manager.add_credential(id, current, &state.queue_keys);
+            warn!("ID: {id}, Failed to enqueue refresh job: {}", e);
+            return;
+        }
         debug!("ID: {id}, Credential refresh enqueued");
     }
 
@@ -360,40 +315,96 @@ impl CredentialsActor {
     async fn handle_submit_credentials(
         &self,
         state: &mut CredentialsActorState,
-        myself: &ActorRef<CredentialsActorMessage>,
         creds_vec: Vec<GoogleCredential>,
     ) {
         let count = creds_vec.len();
         info!(count, "Batch submit received, dispatching...");
-        let ops = state.ops.clone();
+        let refresh_tx = state.refresh_tx.clone();
 
         for cred in creds_vec.into_iter() {
             let pid = cred.project_id.clone();
-            let ops = ops.clone();
-            let myself = myself.clone();
+            let refresh_tx = refresh_tx.clone();
 
             tokio::spawn(async move {
-                let rx_done = match ops.enqueue_refresh(cred) {
-                    Ok(rx) => rx,
-                    Err(_) => return,
-                };
-                let refreshed = match rx_done.await {
-                    Ok(Ok(u)) => u,
-                    _ => return,
-                };
-                match ops.upsert(refreshed.clone(), true).await {
-                    Ok(id) => {
-                        let _ = ractor::cast!(
-                            myself,
-                            CredentialsActorMessage::ActivateCredential {
-                                id,
-                                credential: refreshed
-                            }
-                        );
-                    }
-                    Err(e) => warn!("Project: {pid}, upsert failed: {}", e),
+                if let Err(e) = refresh_tx.send(JobInstruction::Onboard { cred }).await {
+                    warn!(
+                        "Project: {pid}, failed to enqueue onboarding refresh: {}",
+                        e
+                    );
+                    return;
                 }
             });
+        }
+    }
+    async fn handle_refresh_complete(
+        &self,
+        state: &mut CredentialsActorState,
+        outcome: RefreshOutcome,
+    ) {
+        match outcome {
+            RefreshOutcome::Success(job) => match job {
+                JobInstruction::Maintain { id, cred } => {
+                    if !state.manager.is_refreshing(id) {
+                        debug!("ID: {id} Refresh completed after removal; skipping.");
+                        return;
+                    }
+                    debug!("ID: {id} Refresh success. Updating DB and Manager.");
+                    state
+                        .manager
+                        .add_credential(id, cred.clone(), &state.queue_keys);
+                    if let Err(e) = state.ops.update_by_id(id, cred, true).await {
+                        warn!("ID: {id} DB update failed: {}", e);
+                    }
+                }
+
+                JobInstruction::Onboard { cred } => {
+                    let pid = cred.project_id.clone();
+                    info!("Project: {pid} Onboard success. Inserting to DB.");
+
+                    match state.ops.upsert(cred.clone(), true).await {
+                        Ok(new_id) => {
+                            state
+                                .manager
+                                .add_credential(new_id, cred, &state.queue_keys);
+                            info!("Project: {pid} Activated with ID: {new_id}");
+                        }
+                        Err(e) => warn!("Project: {pid} DB upsert failed: {}", e),
+                    }
+                }
+            },
+
+            RefreshOutcome::Failed(job, err) => match job {
+                JobInstruction::Maintain { id, cred } => {
+                    if !state.manager.is_refreshing(id) {
+                        debug!("ID: {id} Refresh failed after removal; skipping.");
+                        return;
+                    }
+                    match err {
+                        NexusError::Oauth2Server { .. } => {
+                            error!("ID: {id} Refresh failed: {}. Removing.", err);
+
+                            state.manager.delete_credential(id);
+                            if let Err(e) = state.ops.set_status(id, false).await {
+                                warn!("ID: {id} DB set_status failed: {}", e);
+                            }
+                        }
+                        _ => {
+                            warn!(
+                                "ID: {id} Refresh failed due to transient error: {}. Keeping credential.",
+                                err
+                            );
+                            state.manager.add_credential(id, cred, &state.queue_keys);
+                        }
+                    }
+                }
+
+                JobInstruction::Onboard { cred } => {
+                    warn!(
+                        "Project: {} Onboard failed: {}. Discarding.",
+                        cred.project_id, err
+                    );
+                }
+            },
         }
     }
 }

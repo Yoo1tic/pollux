@@ -1,15 +1,22 @@
 use super::endpoints::GoogleOauthEndpoints;
-use crate::error::NexusError;
 use crate::google_oauth::credentials::GoogleCredential;
 use crate::google_oauth::utils::attach_email_from_id_token;
-use crate::types::google_code_assist::UserTier;
-use crate::{config::CONFIG, error::IsRetryable};
+use crate::{
+    config::CONFIG,
+    error::{IsRetryable, NexusError},
+    service::credentials_actor::CredentialsHandle,
+    types::google_code_assist::UserTier,
+    types::job::{JobInstruction, RefreshOutcome},
+};
 use backon::{ExponentialBuilder, Retryable};
-use futures::stream::{self, StreamExt};
+use futures::stream::StreamExt;
+use governor::{Quota, RateLimiter};
 use reqwest::header::{CONNECTION, HeaderMap, HeaderValue};
 use serde_json::Value;
+use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::mpsc;
+use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, error, info, warn};
 
 // Refresh pipeline tuning moved to Config.refresh_concurrency.
@@ -24,18 +31,12 @@ fn default_retry_policy() -> ExponentialBuilder {
 
 /// Service layer to compose Google OAuth operations.
 pub struct GoogleOauthService {
-    refresh_tx: mpsc::UnboundedSender<RefreshJob>,
-}
-
-impl Default for GoogleOauthService {
-    fn default() -> Self {
-        Self::new()
-    }
+    job_tx: mpsc::Sender<JobInstruction>,
 }
 
 impl GoogleOauthService {
     /// Create a new service with a preconfigured HTTP client.
-    pub fn new() -> Self {
+    pub fn new(handle: CredentialsHandle) -> Self {
         let mut headers = HeaderMap::new();
         let mut builder = reqwest::Client::builder()
             .user_agent("geminicli-oauth/1.0".to_string())
@@ -60,69 +61,60 @@ impl GoogleOauthService {
             .default_headers(headers)
             .build()
             .expect("FATAL: initialize GoogleOauthService HTTP client failed");
-        let retry_policy = default_retry_policy();
+        let limiter = Arc::new(RateLimiter::direct(Quota::per_minute(
+            std::num::NonZeroU32::new(10).unwrap(),
+        )));
 
-        // Refresh pipeline: unbounded channel + concurrent worker
-        let (refresh_tx, refresh_rx) = mpsc::unbounded_channel::<RefreshJob>();
+        let (job_tx, job_rx) = mpsc::channel::<JobInstruction>(1000);
+        let handle = handle.clone();
 
         // Spawn background refresh worker using buffer_unordered semantics.
         // Extra refresh requests will queue in the channel (unbounded).
         let refresh_concurrency = CONFIG.refresh_concurrency.max(1);
         tokio::spawn(async move {
             info!(
-                unbounded = true,
-                concurrency = refresh_concurrency,
-                "Refresh worker started"
+                "Refresh Pipeline Started: Concurrency={}, RateLimit=10/min",
+                refresh_concurrency
             );
-            let stream = stream::unfold(refresh_rx, |mut rx| async move {
-                let item = rx.recv().await;
-                item.map(|job| (job, rx))
-            });
 
-            stream
-                .map(move |job| {
-                    let client = client.clone();
-                    let policy = retry_policy;
+            let mut pipeline = ReceiverStream::new(job_rx)
+                .map(|mut instruction| {
+                    let lim = limiter.clone();
+                    let http = client.clone();
                     async move {
-                        let mut cred = job.cred;
-                        let res = refresh_inner(client, policy, &mut cred).await.map(|_| cred);
-                        let is_success = res.is_ok();
-                        if let Err(e) = job.respond_to.send(res) {
-                            warn!(?e, "refresh result receiver dropped");
-                        }
-                        if is_success {
-                            tokio::time::sleep(tokio::time::Duration::from_secs(10)).await;
+                        lim.until_ready().await;
+
+                        match instruction.execute(http).await {
+                            Ok(()) => RefreshOutcome::Success(instruction),
+                            Err(e) => RefreshOutcome::Failed(instruction, e),
                         }
                     }
                 })
-                .buffer_unordered(refresh_concurrency)
-                .for_each(|_| async {})
-                .await;
-            info!("Refresh worker stopped (channel closed)");
+                .buffer_unordered(refresh_concurrency); // C. 并发控制
+
+            while let Some(outcome) = pipeline.next().await {
+                if let Err(e) = handle.send_refresh_complete(outcome) {
+                    warn!("Actor unreachable (channel closed), worker stopping: {}", e);
+                    break;
+                }
+            }
+            info!("Refresh Pipeline Stopped");
         });
 
-        Self { refresh_tx }
+        Self { job_tx }
     }
 
-    /// Get a clone of the refresh job sender.
-    pub fn refresh_tx(&self) -> mpsc::UnboundedSender<RefreshJob> {
-        self.refresh_tx.clone()
+    pub fn job_tx(&self) -> mpsc::Sender<JobInstruction> {
+        self.job_tx.clone()
     }
 
-    /// Enqueue a refresh job and await the result.
-    pub async fn queue_refresh(
-        &self,
-        cred: GoogleCredential,
-    ) -> Result<GoogleCredential, NexusError> {
-        let (tx, rx) = oneshot::channel();
-        self.refresh_tx
-            .send(RefreshJob {
-                cred,
-                respond_to: tx,
-            })
-            .map_err(|e| NexusError::RactorError(format!("send refresh job failed: {}", e)))?;
-        rx.await
-            .map_err(|e| NexusError::RactorError(format!("recv refresh result failed: {}", e)))?
+    pub async fn submit(&self, job: JobInstruction) {
+        let tx = self.job_tx.clone();
+        tokio::spawn(async move {
+            if let Err(e) = tx.send(job).await {
+                warn!("Failed to submit refresh job (channel closed/full): {}", e);
+            }
+        });
     }
 
     /// Call loadCodeAssist with network-aware retries.
@@ -176,16 +168,9 @@ impl GoogleOauthService {
     }
 }
 
-/// Refresh request item used by the background refresh pipeline.
-#[derive(Debug)]
-pub struct RefreshJob {
-    pub cred: GoogleCredential,
-    pub respond_to: oneshot::Sender<Result<GoogleCredential, NexusError>>,
-}
-
 /// Shared refresh implementation so both direct calls and the background
 /// worker use the same logic.
-async fn refresh_inner(
+pub async fn refresh_inner(
     client: reqwest::Client,
     retry_policy: ExponentialBuilder,
     creds: &mut GoogleCredential,
