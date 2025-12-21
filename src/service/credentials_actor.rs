@@ -180,13 +180,14 @@ impl Actor for CredentialsActor {
 
     async fn handle(
         &self,
-        _myself: ActorRef<Self::Msg>,
+        myself: ActorRef<Self::Msg>,
         message: Self::Msg,
         state: &mut Self::State,
     ) -> Result<(), ActorProcessingErr> {
         match message {
             CredentialsActorMessage::GetCredential(model_name, rp) => {
-                self.handle_get_credential(state, rp, model_name).await;
+                self.handle_get_credential(myself.clone(), state, rp, model_name)
+                    .await;
             }
 
             CredentialsActorMessage::ReportRateLimit {
@@ -201,7 +202,8 @@ impl Actor for CredentialsActor {
             }
 
             CredentialsActorMessage::ReportInvalid { id } => {
-                self.handle_report_invalid(state, id).await;
+                self.handle_report_invalid(myself.clone(), state, vec![id])
+                    .await;
             }
             CredentialsActorMessage::ReportBaned { id } => {
                 self.handle_report_baned(state, id).await;
@@ -227,6 +229,7 @@ impl Actor for CredentialsActor {
 impl CredentialsActor {
     async fn handle_get_credential(
         &self,
+        myself: ActorRef<CredentialsActorMessage>,
         state: &mut CredentialsActorState,
         reply_port: RpcReplyPort<Option<AssignedCredential>>,
         model_name: impl AsRef<str>,
@@ -234,9 +237,8 @@ impl CredentialsActor {
         let query_key = model_name.as_ref();
         let assignment = state.manager.get_assigned(&query_key);
 
-        for id in assignment.refresh_ids {
-            self.handle_report_invalid(state, id).await;
-        }
+        self.handle_report_invalid(myself, state, assignment.refresh_ids)
+            .await;
 
         if let Some(assigned) = assignment.assigned {
             debug!(
@@ -277,32 +279,53 @@ impl CredentialsActor {
     }
 
     // handle_report_invalid, handle_report_baned, handle_submit_credentials
-    async fn handle_report_invalid(&self, state: &mut CredentialsActorState, id: CredentialId) {
-        if state.manager.is_refreshing(id) {
-            debug!("ID: {id}, Already refreshing; skip duplicate");
+    async fn handle_report_invalid(
+        &self,
+        myself: ActorRef<CredentialsActorMessage>,
+        state: &mut CredentialsActorState,
+        ids: Vec<CredentialId>,
+    ) {
+        let mut jobs_to_send = Vec::new();
+        for id in ids {
+            if state.manager.is_refreshing(id) {
+                debug!("ID: {id} in batch already refreshing, skipping.");
+                continue;
+            }
+            if let Some(current) = state.manager.get_full_credential_copy(id) {
+                state.manager.mark_refreshing(id);
+
+                info!(
+                    "ID: {}, Project: {}, batch invalid reported.",
+                    id, current.project_id
+                );
+
+                jobs_to_send.push((id, current));
+            }
+        }
+        if jobs_to_send.is_empty() {
             return;
         }
-        let Some(current) = state.manager.get_full_credential_copy(id) else {
-            return;
-        };
-        let pid = current.project_id.clone();
-        info!("ID: {id}, Project: {pid}, invalid reported; starting refresh");
+        let refresh_tx = state.refresh_tx.clone();
+        tokio::spawn(async move {
+            for (id, cred) in jobs_to_send {
+                let job = JobInstruction::Maintain {
+                    id,
+                    cred: cred.clone(),
+                };
+                if let Err(e) = refresh_tx.send(job).await {
+                    warn!("ID: {id} Batch refresh enqueue failed. Rolling back.");
 
-        state.manager.mark_refreshing(id);
-
-        if let Err(e) = state
-            .refresh_tx
-            .send(JobInstruction::Maintain {
-                id,
-                cred: current.clone(),
-            })
-            .await
-        {
-            state.manager.add_credential(id, current, &state.queue_keys);
-            warn!("ID: {id}, Failed to enqueue refresh job: {}", e);
-            return;
-        }
-        debug!("ID: {id}, Credential refresh enqueued");
+                    let _ = myself.cast(CredentialsActorMessage::RefreshComplete {
+                        outcome: RefreshOutcome::Failed(
+                            e.0,
+                            NexusError::RactorError("Batch enqueue failed".to_string()),
+                        ),
+                    });
+                } else {
+                    debug!("ID: {id} Batch refresh enqueued.");
+                }
+            }
+        });
     }
 
     async fn handle_report_baned(&self, state: &mut CredentialsActorState, id: CredentialId) {
