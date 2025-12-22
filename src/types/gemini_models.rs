@@ -1,5 +1,5 @@
+use crate::config::CONFIG;
 use serde::{Deserialize, Serialize};
-use serde_json;
 use std::sync::LazyLock;
 
 #[allow(dead_code)]
@@ -41,90 +41,34 @@ pub struct OpenAIModelList {
     pub data: Vec<OpenAIModel>,
 }
 
-/// Embedded Gemini native models response (matches Google Generative Language models endpoint).
-pub const GEMINI_NATIVE_MODELS_JSON: &str = r#"{
-  "models": [
-    {
-      "name": "models/gemini-2.5-flash",
-      "version": "001",
-      "displayName": "Gemini 2.5 Flash",
-      "description": "Stable version of Gemini 2.5 Flash, our mid-size multimodal model that supports up to 1 million tokens, released in June of 2025.",
-      "inputTokenLimit": 1048576,
-      "outputTokenLimit": 65536,
-      "supportedGenerationMethods": [
-        "generateContent",
-        "countTokens",
-        "createCachedContent",
-        "batchGenerateContent"
-      ],
-      "temperature": 1,
-      "topP": 0.95,
-      "topK": 64,
-      "maxTemperature": 2,
-      "thinking": true
-    },
-    {
-      "name": "models/gemini-2.5-pro",
-      "version": "2.5",
-      "displayName": "Gemini 2.5 Pro",
-      "description": "Stable release (June 17th, 2025) of Gemini 2.5 Pro",
-      "inputTokenLimit": 1048576,
-      "outputTokenLimit": 65536,
-      "supportedGenerationMethods": [
-        "generateContent",
-        "countTokens",
-        "createCachedContent",
-        "batchGenerateContent"
-      ],
-      "temperature": 1,
-      "topP": 0.95,
-      "topK": 64,
-      "maxTemperature": 2,
-      "thinking": true
-    },
-    {
-      "name": "models/gemini-2.5-flash-lite",
-      "version": "001",
-      "displayName": "Gemini 2.5 Flash-Lite",
-      "description": "Stable version of Gemini 2.5 Flash-Lite, released in July of 2025",
-      "inputTokenLimit": 1048576,
-      "outputTokenLimit": 65536,
-      "supportedGenerationMethods": [
-        "generateContent",
-        "countTokens",
-        "createCachedContent",
-        "batchGenerateContent"
-      ],
-      "temperature": 1,
-      "topP": 0.95,
-      "topK": 64,
-      "maxTemperature": 2,
-      "thinking": true
-    },
-    {
-      "name": "models/gemini-3-pro-preview",
-      "version": "3-pro-preview-11-2025",
-      "displayName": "Gemini 3 Pro Preview",
-      "description": "Gemini 3 Pro Preview",
-      "inputTokenLimit": 1048576,
-      "outputTokenLimit": 65536,
-      "supportedGenerationMethods": [
-        "generateContent",
-        "countTokens",
-        "createCachedContent",
-        "batchGenerateContent"
-      ],
-      "temperature": 1,
-      "topP": 0.95,
-      "topK": 64,
-      "maxTemperature": 2,
-      "thinking": true
+impl GeminiModel {
+    fn from_name(name: String) -> Self {
+        Self {
+            name: name.clone(),
+            version: None,
+            display_name: name,
+            description: None,
+            input_token_limit: None,
+            output_token_limit: None,
+            supported_generation_methods: None,
+            temperature: None,
+            top_p: None,
+            top_k: None,
+            max_temperature: None,
+            thinking: None,
+        }
     }
-  ]
-}"#;
+}
 
 pub static GEMINI_NATIVE_MODELS: LazyLock<GeminiModelList> = LazyLock::new(|| {
-    serde_json::from_str(GEMINI_NATIVE_MODELS_JSON).expect("embedded models JSON must be valid")
+    let models = CONFIG
+        .model_list
+        .iter()
+        .cloned()
+        .map(GeminiModel::from_name)
+        .collect();
+
+    GeminiModelList { models }
 });
 
 pub static GEMINI_OAI_MODELS: LazyLock<OpenAIModelList> = LazyLock::new(|| {

@@ -16,7 +16,7 @@ impl GoogleOauthOps {
         access_token: impl AsRef<str>,
         http_client: reqwest::Client,
     ) -> Result<Value, NexusError> {
-        let retry_policy = OAUTH_RETRY_POLICY.clone();
+        let retry_policy = *OAUTH_RETRY_POLICY;
 
         (|| async {
             GoogleOauthEndpoints::load_code_assist(access_token.as_ref(), http_client.clone()).await
@@ -39,7 +39,7 @@ impl GoogleOauthOps {
         cloudaicompanion_project: Option<String>,
         http_client: reqwest::Client,
     ) -> Result<Value, NexusError> {
-        let retry_policy = OAUTH_RETRY_POLICY.clone();
+        let retry_policy = *OAUTH_RETRY_POLICY;
 
         (|| async {
             GoogleOauthEndpoints::onboard_code_assist(

@@ -37,7 +37,7 @@ pub enum RefreshOutcome {
 
 impl JobInstruction {
     pub async fn execute(&mut self, client: reqwest::Client) -> Result<(), NexusError> {
-        let retry_policy = OAUTH_RETRY_POLICY.clone();
+        let retry_policy = *OAUTH_RETRY_POLICY;
 
         match self {
             Self::Maintain { cred, .. } => {

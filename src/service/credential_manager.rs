@@ -36,6 +36,12 @@ pub struct CredentialManager {
     model_blacklist: HashMap<CredentialId, HashSet<String>>,
 }
 
+impl Default for CredentialManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CredentialManager {
     pub fn new() -> Self {
         Self {
@@ -59,14 +65,14 @@ impl CredentialManager {
 
         let blacklist = self.model_blacklist.get(&id);
         for queue_key in all_keys {
-            if let Some(set) = blacklist {
-                if set.contains(queue_key) {
-                    debug!(
-                        "Skipping model {} for credential {} (unsupported)",
-                        queue_key, id
-                    );
-                    continue;
-                }
+            if let Some(set) = blacklist
+                && set.contains(queue_key)
+            {
+                warn!(
+                    "Skipping model {} for credential {} (unsupported)",
+                    queue_key, id
+                );
+                continue;
             }
 
             let queue = self.queues.entry(queue_key.clone()).or_default();
@@ -138,7 +144,7 @@ impl CredentialManager {
             if self
                 .model_blacklist
                 .get(&id)
-                .map_or(false, |set| set.contains(queue_key))
+                .is_some_and(|set| set.contains(queue_key))
             {
                 debug!(
                     "Skipping model {} for credential {} (unsupported)",
@@ -161,7 +167,7 @@ impl CredentialManager {
                 .filter(|_| !cred.is_expired())
                 .cloned()
             else {
-                debug!(
+                warn!(
                     "Credential {} is unavailable (expired or missing token), scheduling refresh.",
                     id
                 );
@@ -186,7 +192,7 @@ impl CredentialManager {
     fn process_waiting_room(&mut self) {
         let now = Instant::now();
 
-        while self.waiting_room.peek().map_or(false, |t| (t.0).0 <= now) {
+        while self.waiting_room.peek().is_some_and(|t| (t.0).0 <= now) {
             let CooldownTicket(Reverse(ticket_deadline), credential_id, queue_key) =
                 self.waiting_room.pop().expect("peek guaranteed existence");
 
@@ -195,15 +201,13 @@ impl CredentialManager {
                     if ticket_deadline >= *entry.get() =>
                 {
                     let ((reclaimed_cred_id, reclaimed_queue_key), _) = entry.remove_entry();
-                    self.queues
-                        .get_mut(&reclaimed_queue_key)
-                        .map(|target_queue| {
-                            target_queue.push_back(reclaimed_cred_id);
-                            info!(
-                                "Reclaiming credential {} from cooldown for queue {}",
-                                reclaimed_cred_id, reclaimed_queue_key
-                            );
-                        });
+                    if let Some(target_queue) = self.queues.get_mut(&reclaimed_queue_key) {
+                        target_queue.push_back(reclaimed_cred_id);
+                        info!(
+                            "Reclaiming credential {} from cooldown for queue {}",
+                            reclaimed_cred_id, reclaimed_queue_key
+                        );
+                    }
                 }
                 _ => {}
             }

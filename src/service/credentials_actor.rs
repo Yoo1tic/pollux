@@ -107,12 +107,12 @@ impl CredentialsHandle {
         );
     }
 
-    pub fn send_refresh_complete(
-        &self,
-        outcome: RefreshOutcome,
-    ) -> Result<(), ractor::MessagingErr<CredentialsActorMessage>> {
-        self.actor
-            .cast(CredentialsActorMessage::RefreshComplete { outcome })
+    pub fn send_refresh_complete(&self, outcome: RefreshOutcome) -> Result<(), NexusError> {
+        ractor::cast!(
+            self.actor,
+            CredentialsActorMessage::RefreshComplete { outcome }
+        )
+        .map_err(|e| NexusError::RactorError(format!("RefreshComplete cast failed: {e}")))
     }
 }
 
@@ -236,7 +236,7 @@ impl CredentialsActor {
         model_name: impl AsRef<str>,
     ) {
         let query_key = model_name.as_ref();
-        let assignment = state.manager.get_assigned(&query_key);
+        let assignment = state.manager.get_assigned(query_key);
 
         if !assignment.refresh_ids.is_empty() {
             self.handle_report_invalid(myself, state, assignment.refresh_ids)
@@ -245,8 +245,11 @@ impl CredentialsActor {
 
         if let Some(assigned) = assignment.assigned {
             info!(
-                "Get credential: ID: {}, Project: {}, queue: {}",
-                assigned.id, assigned.project_id, query_key
+                "Get credential: ID: {}, Project: {}, queue: {}, queue_len={}",
+                assigned.id,
+                assigned.project_id,
+                query_key,
+                state.manager.queue_len(query_key)
             );
             let _ = reply_port.send(Some(assigned));
             return;
@@ -255,7 +258,7 @@ impl CredentialsActor {
         warn!(
             "No credential available for queue={}, queue_len={}, cooldowns={}, refreshing={}",
             query_key,
-            state.manager.queue_len(&query_key),
+            state.manager.queue_len(query_key),
             state.manager.cooldown_len(),
             state.manager.refreshing_len()
         );
@@ -273,7 +276,7 @@ impl CredentialsActor {
             return;
         }
         let query_key = model_name.as_ref();
-        state.manager.report_rate_limit(id, &query_key, cooldown);
+        state.manager.report_rate_limit(id, query_key, cooldown);
 
         info!(
             "ID: {id}, Credential starting cooldown for {query_key} queue, lazy re-enqueue after {} secs",
