@@ -244,8 +244,8 @@ impl CredentialsActor {
         }
 
         if let Some(assigned) = assignment.assigned {
-            debug!(
-                "ID: {}, Project: {}, queue: {}, get credential",
+            info!(
+                "Get credential: ID: {}, Project: {}, queue: {}",
                 assigned.id, assigned.project_id, query_key
             );
             let _ = reply_port.send(Some(assigned));

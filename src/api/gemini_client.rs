@@ -5,7 +5,7 @@ use crate::router::NexusState;
 use axum::http::StatusCode;
 use backon::{ExponentialBuilder, Retryable};
 use serde::Serialize;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::{error, info, warn};
 
 use super::gemini_api::GeminiApi;
@@ -59,14 +59,17 @@ impl GeminiClient {
                 let client = client.clone();
                 let base_payload = base_payload.clone();
                 async move {
+                    let start = Instant::now();
                     let assigned = handle
                         .get_credential(&ctx.model)
                         .await?
                         .ok_or(NexusError::NoAvailableCredential)?;
 
                     info!(
-                        "Using credential ID: {} Project: {}",
-                        assigned.id, assigned.project_id
+                        "Using credential ID: {}, Project: {}, Actor took {:?}",
+                        assigned.id,
+                        assigned.project_id,
+                        start.elapsed()
                     );
 
                     let mut payload = base_payload.clone();
