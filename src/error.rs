@@ -29,6 +29,9 @@ pub enum NexusError {
     #[error("JSON error: {0}")]
     JsonError(#[from] serde_json::Error),
 
+    #[error("IO error: {0}")]
+    IoError(#[from] std::io::Error),
+
     #[error("URL parse error: {0}")]
     UrlError(#[from] url::ParseError),
 
@@ -93,6 +96,7 @@ impl IntoResponse for NexusError {
             NexusError::DatabaseError(_)
             | NexusError::RactorError(_)
             | NexusError::UnexpectedError(_)
+            | NexusError::IoError(_)
             | NexusError::MissingAccessToken => {
                 let status = StatusCode::INTERNAL_SERVER_ERROR;
                 let body = ApiErrorBody {

@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 use tokio::{net::TcpListener, signal};
 use tracing::{info, warn};
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
+
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
 
@@ -14,6 +15,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let env_filter =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(cfg.loglevel.clone()));
+
     tracing_subscriber::registry()
         .with(env_filter)
         .with(
@@ -30,12 +32,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         loglevel = %cfg.loglevel,
         nexus_key = %cfg.nexus_key,
         listen_addr = %cfg.listen_addr,
-        listen_port = cfg.listen_port,
-        client_id = %gcli_nexus::config::GCLI_CLIENT_ID,
-        client_secret = %gcli_nexus::config::GCLI_CLIENT_SECRET
+        listen_port = cfg.listen_port
     );
-
-    let _ = gcli_nexus::config::CONFIG.nexus_key.len();
 
     let handle = gcli_nexus::service::credentials_actor::spawn().await;
     let handle_clone = handle.clone();
