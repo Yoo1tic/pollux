@@ -19,6 +19,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tracing::{debug, error, info, warn};
 
 #[derive(Debug)]
+/// Work items processed by the refresh pipeline.
 pub enum JobInstruction {
     Maintain {
         id: CredentialId,
@@ -45,6 +46,7 @@ impl JobInstruction {
             }
 
             Self::Onboard { cred } => {
+                // Onboard path refreshes tokens then verifies companion project metadata.
                 refresh_inner(client.clone(), retry_policy, cred).await?;
                 let token_str = cred.access_token.as_deref().ok_or_else(|| {
                     NexusError::RactorError("Refresh success but token is None".to_string())
@@ -67,7 +69,7 @@ impl JobInstruction {
     }
 }
 
-// Refresh pipeline tuning moved to Config.oauth_tps.
+/// Owns the refresh worker and submission channel.
 pub struct RefreshJobService {
     job_tx: mpsc::Sender<JobInstruction>,
 }
@@ -111,7 +113,6 @@ impl RefreshJobService {
         let handle = handle.clone();
 
         // Spawn background refresh worker using buffer_unordered semantics.
-        // Extra refresh requests will queue in the channel (unbounded).
         let buffer_unordered = oauth_tps.saturating_mul(2).max(1);
         tokio::spawn(async move {
             info!(
@@ -181,6 +182,7 @@ pub async fn refresh_inner(
             .await?;
     let mut payload: Value = serde_json::to_value(&payload)?;
     debug!("Token response payload: {}", payload);
+    // Attach optional email from the ID token before persisting credentials.
     attach_email_from_id_token(&mut payload);
     creds.update_credential(&payload)?;
     Ok(())

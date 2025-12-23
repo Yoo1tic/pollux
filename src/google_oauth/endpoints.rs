@@ -141,8 +141,8 @@ impl GoogleOauthEndpoints {
         Ok(body)
     }
 
-    /// Call Cloud Code's onboardCodeAssist to provision a companion project and tier.
-    pub(crate) async fn onboard_code_assist(
+    /// Call Cloud Code's onboardUser to provision a companion project and tier.
+    pub(crate) async fn onboard_user(
         access_token: impl AsRef<str>,
         tier: UserTier,
         cloudaicompanion_project: Option<String>,
@@ -175,7 +175,7 @@ impl GoogleOauthEndpoints {
     }
 }
 
-/// Build the Google OAuth2 client from credentials.
+/// Build the Google OAuth2 client.
 fn build_oauth2_client() -> Result<GoogleOauth2Client, NexusError> {
     let client = OAuth2Client::new(ClientId::new(GCLI_CLIENT_ID.to_string()))
         .set_client_secret(ClientSecret::new(GCLI_CLIENT_SECRET.to_string()))

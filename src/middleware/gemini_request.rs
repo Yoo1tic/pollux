@@ -10,7 +10,6 @@ use std::collections::HashSet;
 use std::sync::LazyLock;
 use tracing::warn;
 
-// Move types to middleware: it is the handler layer
 pub type GeminiRequestBody = serde_json::Value;
 
 #[derive(Debug, Clone)]
@@ -61,10 +60,8 @@ where
                 .into_response());
         }
 
-        // Streaming decision: only `streamGenerateContent` is true; `generateContent` is false
         let stream = path.contains("streamGenerateContent");
 
-        // Parse JSON body
         let Json(body) = match Json::<GeminiRequestBody>::from_request(req, &()).await {
             Ok(v) => v,
             Err(rejection) => return Err(rejection.into_response()),

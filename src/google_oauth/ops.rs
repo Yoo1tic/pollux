@@ -42,7 +42,7 @@ impl GoogleOauthOps {
         let retry_policy = *OAUTH_RETRY_POLICY;
 
         (|| async {
-            GoogleOauthEndpoints::onboard_code_assist(
+            GoogleOauthEndpoints::onboard_user(
                 access_token.as_ref(),
                 tier.clone(),
                 cloudaicompanion_project.clone(),

@@ -5,7 +5,6 @@ use tracing::error;
 pub struct GeminiApi;
 
 impl GeminiApi {
-    /// Low-level POST helper with automatic retries for network / HTTP errors
     pub async fn try_post_cli<T>(
         client: reqwest::Client,
         token: impl AsRef<str>,
