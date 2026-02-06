@@ -1,16 +1,14 @@
 services:
   pollux:
-    image: ghcr.io/Yoo1tic/pollux:latest
+    image: ghcr.io/yoo1tic/pollux:latest
     container_name: pollux
     ports:
       - "8188:8188"
     volumes:
       # Runtime config
-      - ./config.toml:/app/config.toml:ro
+      - ./config.toml:/app/config.toml
       # Persist SQLite database
-      - ./data:/app/data
-      # Optional: mount credentials directory
-      - ./credentials:/app/credentials:ro
+      - ./data.db:/app/data.db
 
     # Restart policy
     restart: unless-stopped

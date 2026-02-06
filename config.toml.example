@@ -1,0 +1,27 @@
+# Runtime configuration for pollux.
+[basic]
+listen_addr = "0.0.0.0"
+listen_port = 8188
+database_url = "sqlite://data.db"
+loglevel = "info"
+pollux_key = "123"
+
+# Global defaults for providers (overridden per provider if set).
+[providers.defaults]
+enable_multiplexing = true
+retry_max_times = 3
+# proxy = "http://127.0.0.1:1080"
+
+[providers.geminicli]
+oauth_tps = 2
+model_list = ["gemini-2.5-flash-lite","gemini-2.5-flash", "gemini-2.5-pro", "gemini-3-flash-preview", "gemini-3-pro-preview"]
+# retry_max_times = 3
+enable_multiplexing = false
+# proxy = "http://127.0.0.1:1081"
+
+[providers.codex]
+oauth_tps = 2
+model_list = ["gpt-5.2", "gpt-5.2-codex", "gpt-5.3-codex"]
+# enable_multiplexing = true
+# retry_max_times = 3
+# proxy = "http://127.0.0.1:1081"
