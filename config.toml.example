@@ -5,6 +5,8 @@ listen_port = 8188
 database_url = "sqlite://data.db"
 loglevel = "info"
 pollux_key = "123"
+# Keep false for HTTPS; set true only when testing OAuth over plain HTTP.
+insecure_cookie = false
 
 # Global defaults for providers (overridden per provider if set).
 [providers.defaults]

@@ -30,6 +30,13 @@ pub struct BasicConfig {
     #[serde(default)]
     #[serde(deserialize_with = "deserialize_string_lax")]
     pub pollux_key: String,
+
+    /// Whether OAuth CSRF/PKCE cookies are marked insecure (`Secure=false`).
+    /// TOML: `basic.insecure_cookie`. Default: `false`.
+    ///
+    /// Keep `false` in production/HTTPS. Set `true` only for local plain-HTTP testing.
+    #[serde(default)]
+    pub insecure_cookie: bool,
 }
 
 impl Default for BasicConfig {
@@ -41,6 +48,7 @@ impl Default for BasicConfig {
             loglevel: "info".to_string(),
             // No insecure default. `Config::from_toml()` enforces non-empty.
             pollux_key: "".to_string(),
+            insecure_cookie: false,
         }
     }
 }

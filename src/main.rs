@@ -31,7 +31,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let providers = pollux::providers::Providers::spawn(db.clone(), &cfg).await;
     // Build axum router and serve
     let pollux_key: Arc<str> = Arc::from(cfg.basic.pollux_key.clone());
-    let state = pollux::server::router::PolluxState::new(providers, pollux_key);
+    let state =
+        pollux::server::router::PolluxState::new(providers, pollux_key, cfg.basic.insecure_cookie);
     let app = pollux::server::router::pollux_router(state);
 
     let addr = SocketAddr::from((cfg.basic.listen_addr, cfg.basic.listen_port));

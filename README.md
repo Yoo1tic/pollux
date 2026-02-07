@@ -1,7 +1,6 @@
 # Pollux
 
-Pollux is a **headless, actor-driven Rust gateway** that exposes stable API surfaces on top of
-credential-based upstreams.
+Pollux is a headless, actor-driven Rust reverse proxy that orchestrates AI resources. It serves as a microsecond-level scheduler, transforming raw credential resources into standard Gemini & OpenAI interfaces.
 
 Today it ships with two providers:
 
@@ -40,15 +39,15 @@ OAuth entry/callback endpoints do **not** require the key.
 
 ### Gemini (Gemini CLI provider)
 
-| Endpoint                                       | Method | Auth | Description                                           |
-| :--------------------------------------------- | :----- | :--- | :---------------------------------------------------- |
+| Endpoint                                                 | Method | Auth | Description                                           |
+| :------------------------------------------------------- | :----- | :--- | :---------------------------------------------------- |
 | `/geminicli/v1beta/models`                               | `GET`  | ✅   | List supported Gemini models.                         |
 | `/geminicli/v1beta/openai/models`                        | `GET`  | ✅   | List the same models in OpenAI-style `models` format. |
 | `/geminicli/v1beta/models/{model}:generateContent`       | `POST` | ✅   | Unary generateContent.                                |
 | `/geminicli/v1beta/models/{model}:streamGenerateContent` | `POST` | ✅   | Streaming generateContent (SSE).                      |
-| `/geminicli/resource:add`                      | `POST` | ✅   | Ingest Gemini CLI refresh tokens (0-trust, batch).    |
-| `/geminicli/auth`                              | `GET`  | ❌   | Start Google OAuth (Gemini CLI flow).                 |
-| `/oauth2callback`                              | `GET`  | ❌   | Google OAuth callback handler.                        |
+| `/geminicli/resource:add`                                | `POST` | ✅   | Ingest Gemini CLI refresh tokens (0-trust, batch).    |
+| `/geminicli/auth`                                        | `GET`  | ❌   | Start Google OAuth (Gemini CLI flow).                 |
+| `/oauth2callback`                                        | `GET`  | ❌   | Google OAuth callback handler.                        |
 
 ### Codex (OpenAI Responses API–compatible)
 
@@ -65,6 +64,8 @@ OAuth entry/callback endpoints do **not** require the key.
 
 ### 1) Configure (`config.toml`)
 
+Template: [`config.toml.example`](./config.toml.example)
+
 `pollux` requires a real `config.toml` at runtime (and `basic.pollux_key` must be non-empty).
 
 Minimal example:
@@ -76,6 +77,7 @@ listen_port = 8188
 database_url = "sqlite://data.db"
 loglevel = "info"
 pollux_key = "change-me"
+insecure_cookie = false
 
 [providers.geminicli]
 model_list = ["gemini-2.5-pro"]
@@ -84,9 +86,14 @@ model_list = ["gemini-2.5-pro"]
 model_list = ["gpt-5.2-codex"]
 ```
 
+`basic.insecure_cookie` defaults to `false` (recommended for HTTPS).
+If you access Pollux via plain HTTP (for testing), set it to `true`; otherwise browser OAuth session cookies may not be sent.
+
 ### 2) Run
 
-**Option A: Docker Compose**
+**Option A: [Docker Compose]**
+
+Template: [`docker-compose.yml.example`](./docker-compose.yml.example)
 
 - Copy `docker-compose.yml.example` to `docker-compose.yml`
 - Make sure your `config.toml` is mounted to `/app/config.toml`
@@ -115,7 +122,7 @@ Server defaults to `0.0.0.0:8188` (configurable).
 ```bash
 curl -X POST "http://localhost:8188/geminicli/resource:add?key=change-me" \
   -H "Content-Type: application/json" \
-  -d '[{"refresh_token":"1//..."}]'
+  -d '[{"refresh_token":"1//..."}, {"refresh_token":"2//..."}]'
 ```
 
 Pollux returns `202 Accepted` + `Success` once accepted; detailed validation outcomes are logged.
@@ -136,7 +143,7 @@ Pollux returns `202 Accepted` + `Success` once accepted; detailed validation out
 curl -X POST "http://localhost:8188/codex/resource:add" \
   -H "Authorization: Bearer change-me" \
   -H "Content-Type: application/json" \
-  -d '[{"refresh_token":"rt_01..."}]'
+  -d '[{"refresh_token":"rt_01..."}, {"refresh_token":"rt_02..."}]'
 ```
 
 ## License

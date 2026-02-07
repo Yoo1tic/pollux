@@ -27,15 +27,23 @@ pub struct AuthCallbackQuery {
 ///
 /// Starts the Codex OAuth2 PKCE flow and redirects the browser to the OpenAI auth page.
 pub async fn codex_oauth_entry(
-    State(_state): State<PolluxState>,
+    State(state): State<PolluxState>,
     jar: PrivateCookieJar,
 ) -> Result<impl IntoResponse, PolluxError> {
     let (challenge, verifier) = PkceCodeChallenge::new_random_sha256();
     let (auth_url, csrf_token) = CodexOauthEndpoints::build_authorize_url(challenge);
 
     let jar = jar
-        .add(build_cookie(CSRF_COOKIE, csrf_token.secret().to_string()))
-        .add(build_cookie(PKCE_COOKIE, verifier.secret().to_string()));
+        .add(build_cookie(
+            CSRF_COOKIE,
+            csrf_token.secret().to_string(),
+            !state.insecure_cookie,
+        ))
+        .add(build_cookie(
+            PKCE_COOKIE,
+            verifier.secret().to_string(),
+            !state.insecure_cookie,
+        ));
 
     info!("Dispatching Codex OAuth redirect to: {}", auth_url);
     Ok((jar, Redirect::temporary(auth_url.as_ref())).into_response())
@@ -143,11 +151,11 @@ fn take_oauth_cookies(jar: PrivateCookieJar) -> (PrivateCookieJar, Option<(Strin
     }
 }
 
-fn build_cookie(name: &'static str, value: String) -> Cookie<'static> {
+fn build_cookie(name: &'static str, value: String, secure: bool) -> Cookie<'static> {
     Cookie::build((name, value))
         .path("/")
         .http_only(true)
-        .secure(true)
+        .secure(secure)
         .same_site(SameSite::Lax)
         .max_age(Duration::minutes(15))
         .build()

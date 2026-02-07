@@ -40,7 +40,11 @@ async fn codex_response_route_rejects_bad_requests_and_requires_key() {
     // No Codex keys inserted => valid requests should yield 503 (NO_CREDENTIAL).
     let providers = pollux::providers::Providers::spawn(db.clone(), &cfg).await;
     let pollux_key: Arc<str> = Arc::from(cfg.basic.pollux_key.clone());
-    let state = pollux::server::router::PolluxState::new(providers, pollux_key.clone());
+    let state = pollux::server::router::PolluxState::new(
+        providers,
+        pollux_key.clone(),
+        cfg.basic.insecure_cookie,
+    );
     let app = pollux::server::router::pollux_router(state);
 
     // 1) no key -> 401

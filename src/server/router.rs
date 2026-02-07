@@ -52,10 +52,11 @@ pub struct PolluxState {
     pub client: reqwest::Client,
     pub codex_client: reqwest::Client,
     pub pollux_key: Arc<str>,
+    pub insecure_cookie: bool,
 }
 
 impl PolluxState {
-    pub fn new(providers: Providers, pollux_key: Arc<str>) -> Self {
+    pub fn new(providers: Providers, pollux_key: Arc<str>, insecure_cookie: bool) -> Self {
         let geminicli_cfg = providers.geminicli_cfg.clone();
         let codex_cfg = providers.codex_cfg.clone();
 
@@ -110,6 +111,7 @@ impl PolluxState {
             client,
             codex_client,
             pollux_key,
+            insecure_cookie,
         }
     }
 }
