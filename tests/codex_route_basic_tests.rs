@@ -119,7 +119,32 @@ async fn codex_response_route_rejects_bad_requests_and_requires_key() {
         r#"{"error":{"code":"NO_CREDENTIAL","message":"No available credentials to process the request.","type":"NO_CREDENTIAL"}}"#
     );
 
-    // 5) GET /codex/v1/models: no key -> 401
+    // 5) correct key + oversized JSON body -> 413
+    let oversized_input = "a".repeat(30 * 1024 * 1024 + 1024);
+    let oversized_payload = format!(r#"{{"model":"{model}","input":"{oversized_input}"}}"#);
+    let resp = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/codex/v1/responses")
+                .header("content-type", "application/json")
+                .header("x-goog-api-key", pollux_key.as_ref())
+                .body(Body::from(oversized_payload))
+                .expect("failed to build request"),
+        )
+        .await
+        .expect("request failed");
+    assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+    let body = to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("failed to read response body");
+    let body_str = std::str::from_utf8(&body).expect("response body was not utf-8");
+    assert!(body_str.contains(r#""code":"PAYLOAD_TOO_LARGE""#));
+    assert!(body_str.contains(r#""message":"request body too large""#));
+
+    // 6) GET /codex/v1/models: no key -> 401
     let resp = app
         .clone()
         .oneshot(
@@ -133,7 +158,7 @@ async fn codex_response_route_rejects_bad_requests_and_requires_key() {
         .expect("request failed");
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
-    // 6) GET /codex/v1/models: correct key -> 200 with JSON list
+    // 7) GET /codex/v1/models: correct key -> 200 with JSON list
     let resp = app
         .clone()
         .oneshot(
@@ -157,7 +182,7 @@ async fn codex_response_route_rejects_bad_requests_and_requires_key() {
     assert!(body_str.contains("\"object\":\"list\""));
     assert!(body_str.contains(&format!("\"id\":\"{}\"", model)));
 
-    // 7) POST /codex/resource:add: no key -> 401
+    // 8) POST /codex/resource:add: no key -> 401
     let resp = app
         .clone()
         .oneshot(
@@ -172,7 +197,7 @@ async fn codex_response_route_rejects_bad_requests_and_requires_key() {
         .expect("request failed");
     assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
 
-    // 8) POST /codex/resource:add: correct key + non-array payload -> 400
+    // 9) POST /codex/resource:add: correct key + non-array payload -> 400
     let resp = app
         .clone()
         .oneshot(
@@ -194,7 +219,7 @@ async fn codex_response_route_rejects_bad_requests_and_requires_key() {
     let body_str = std::str::from_utf8(&body).expect("response body was not utf-8");
     assert!(body_str.contains("数据格式不允许"));
 
-    // 9) POST /codex/resource:add: correct key + array payload -> 202 + Success
+    // 10) POST /codex/resource:add: correct key + array payload -> 202 + Success
     let resp = app
         .clone()
         .oneshot(

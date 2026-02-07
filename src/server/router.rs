@@ -226,7 +226,7 @@ pub fn pollux_router(state: PolluxState) -> Router {
         .merge(codex)
         .fallback(not_found_handler)
         .with_state(state)
-        // Set DefaultBodyLimit to 10 MiB for all routes
-        .layer(DefaultBodyLimit::max(10 * 1024 * 1024))
+        // Set DefaultBodyLimit to 30 MiB for all routes
+        .layer(DefaultBodyLimit::max(30 * 1024 * 1024))
         .layer(middleware::from_fn(access_log))
 }

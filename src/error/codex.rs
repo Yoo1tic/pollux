@@ -53,9 +53,16 @@ impl From<JsonRejection> for CodexError {
     fn from(rejection: JsonRejection) -> Self {
         let debug_message = rejection.to_string();
         match rejection {
-            JsonRejection::BytesRejection(e) => {
-                CodexError::Internal(format!("Failed to read request body: {e}"))
-            }
+            JsonRejection::BytesRejection(_) => CodexError::RequestRejected {
+                status: StatusCode::PAYLOAD_TOO_LARGE,
+                body: OpenaiResponsesErrorObject {
+                    code: Some("PAYLOAD_TOO_LARGE".to_string()),
+                    message: "request body too large".to_string(),
+                    r#type: "PAYLOAD_TOO_LARGE".to_string(),
+                    param: None,
+                },
+                debug_message: Some(debug_message),
+            },
             JsonRejection::JsonSyntaxError(_) => CodexError::RequestRejected {
                 status: StatusCode::BAD_REQUEST,
                 body: OpenaiResponsesErrorObject {

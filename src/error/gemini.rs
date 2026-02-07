@@ -57,6 +57,15 @@ impl From<JsonRejection> for GeminiCliError {
     fn from(rejection: JsonRejection) -> Self {
         let debug_message = rejection.to_string();
         match rejection {
+            JsonRejection::BytesRejection(_) => GeminiCliError::RequestRejected {
+                status: StatusCode::PAYLOAD_TOO_LARGE,
+                body: GeminiErrorObject::for_status(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "PAYLOAD_TOO_LARGE",
+                    "request body too large",
+                ),
+                debug_message: Some(debug_message),
+            },
             JsonRejection::JsonSyntaxError(_) => GeminiCliError::RequestRejected {
                 status: StatusCode::BAD_REQUEST,
                 body: GeminiErrorObject::for_status(
